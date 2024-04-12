@@ -2,7 +2,6 @@
 #include <math.h>
 #include <float.h>
 #include <string.h>
-#include <omp.h>
 #include "layer_t.h"
 
 #pragma pack(push, 1)
@@ -63,60 +62,60 @@ struct fc_layer_t
 			d.x;
 	}
 
-void fc_layer_t::activate()
-{
-    #pragma omp parallel for
-    for (int n = 0; n < out.size.x; n++)
-    {
-        float inputv = 0;
+	void activate()
+	{
+		for ( int n = 0; n < out.size.x; n++ )
+		{
+			float inputv = 0;
 
-        for (int i = 0; i < in.size.x; i++)
-            for (int j = 0; j < in.size.y; j++)
-                for (int z = 0; z < in.size.z; z++)
-                {
-                    int m = map({i, j, z});
-                    inputv += in(i, j, z) * weights(m, n, 0);
-                }
+			for ( int i = 0; i < in.size.x; i++ )
+				for ( int j = 0; j < in.size.y; j++ )
+					for ( int z = 0; z < in.size.z; z++ )
+					{
+						int m = map( { i, j, z } );
+						inputv += in( i, j, z ) * weights( m, n, 0 );
+					}
 
-        input[n] = inputv;
-        out(n, 0, 0) = activator_function(inputv);
-    }
-}
+			input[n] = inputv;
 
-void fc_layer_t::fix_weights()
-{
-    #pragma omp parallel for
-    for (int n = 0; n < out.size.x; n++)
-    {
-        gradient_t& grad = gradients[n];
-        for (int i = 0; i < in.size.x; i++)
-            for (int j = 0; j < in.size.y; j++)
-                for (int z = 0; z < in.size.z; z++)
-                {
-                    int m = map({i, j, z});
-                    float& w = weights(m, n, 0);
-                    w = update_weight(w, grad, in(i, j, z));
-                }
+			out( n, 0, 0 ) = activator_function( inputv );
+		}
+	}
 
-        update_gradient(grad);
-    }
-}
+	void fix_weights()
+	{
+		for ( int n = 0; n < out.size.x; n++ )
+		{
+			gradient_t& grad = gradients[n];
+			for ( int i = 0; i < in.size.x; i++ )
+				for ( int j = 0; j < in.size.y; j++ )
+					for ( int z = 0; z < in.size.z; z++ )
+					{
+						int m = map( { i, j, z } );
+						float& w = weights( m, n, 0 );
+						w = update_weight( w, grad, in( i, j, z ) );
+					}
 
-void fc_layer_t::calc_grads(tensor_t<float>& grad_next_layer)
-{
-    #pragma omp parallel for
-    for (int n = 0; n < out.size.x; n++)
-    {
-        gradient_t& grad = gradients[n];
-        grad.grad = grad_next_layer(n, 0, 0) * activator_derivative(input[n]);
+			update_gradient( grad );
+		}
+	}
 
-        for (int i = 0; i < in.size.x; i++)
-            for (int j = 0; j < in.size.y; j++)
-                for (int z = 0; z < in.size.z; z++)
-                {
-                    int m = map({i, j, z});
-                    grads_in(i, j, z) += grad.grad * weights(m, n, 0);
-                }
-    }
-}
+	void calc_grads( tensor_t<float>& grad_next_layer )
+	{
+		memset( grads_in.data, 0, grads_in.size.x *grads_in.size.y*grads_in.size.z * sizeof( float ) );
+		for ( int n = 0; n < out.size.x; n++ )
+		{
+			gradient_t& grad = gradients[n];
+			grad.grad = grad_next_layer( n, 0, 0 ) * activator_derivative( input[n] );
+
+			for ( int i = 0; i < in.size.x; i++ )
+				for ( int j = 0; j < in.size.y; j++ )
+					for ( int z = 0; z < in.size.z; z++ )
+					{
+						int m = map( { i, j, z } );
+						grads_in( i, j, z ) += grad.grad * weights( m, n, 0 );
+					}
+		}
+	}
+};
 #pragma pack(pop)
