@@ -137,7 +137,7 @@ int main()
     
     vector<case_t> train_cases, val_cases, test_cases;
     split_data(cases, train_cases, val_cases, test_cases);
-	    int num_epochs = 51;
+	    int num_epochs = 50;
   vector<layer_t*> layers;
 
 	conv_layer_t * layer1 = new conv_layer_t( 1, 5, 8, cases[0].data.size );		// 28 * 28 * 1 -> 24 * 24 * 8
@@ -152,7 +152,7 @@ int main()
 
 
 
- for (int epoch = 1; epoch < num_epochs; epoch++) {
+ for (int epoch = 0; epoch < num_epochs; epoch++) {
         float train_loss = 0;
         for (auto& t : train_cases) {
             float xerr = train(layers, t.data, t.out);
