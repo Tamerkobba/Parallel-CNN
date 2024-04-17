@@ -1,77 +1,50 @@
+
 #include <cassert>
 #include <cstdint>
 #include <cstdio>
-#include <random>
-#include <cmath> 
 #include <iostream>
 #include <fstream>
 #include <algorithm>
-#include<chrono>
 #include "byteswap.h"
 #include "CNN/cnn.h"
 
 using namespace std;
-struct case_t
+
+float train( vector<layer_t*>& layers, tensor_t<float>& data, tensor_t<float>& expected )
 {
-	tensor_t<float> data;
-	tensor_t<float> out;
-};
-void split_data(vector<case_t>& cases, vector<case_t>& train_cases, vector<case_t>& val_cases, vector<case_t>& test_cases, float train_split = 0.7, float val_split = 0.15) {
-    unsigned seed = chrono::system_clock::now().time_since_epoch().count();
-    shuffle(cases.begin(), cases.end(), default_random_engine(seed));
+	for ( int i = 0; i < layers.size(); i++ )
+	{
+		if ( i == 0 )
+			activate( layers[i], data );
+		else
+			activate( layers[i], layers[i - 1]->out );
+	}
 
-    int total_cases = cases.size();
-    int train_size = int(total_cases * train_split);
-    int val_size = int(total_cases * val_split);
+	tensor_t<float> grads = layers.back()->out - expected;
 
-    train_cases.assign(cases.begin(), cases.begin() + train_size);
-    val_cases.assign(cases.begin() + train_size, cases.begin() + train_size + val_size);
-    test_cases.assign(cases.begin() + train_size + val_size, cases.end());
+	for ( int i = layers.size() - 1; i >= 0; i-- )
+	{
+		if ( i == layers.size() - 1 )
+			calc_grads( layers[i], grads );
+		else
+			calc_grads( layers[i], layers[i + 1]->grads_in );
+	}
+
+	for ( int i = 0; i < layers.size(); i++ )
+	{
+		fix_weights( layers[i] );
+	}
+
+	float err = 0;
+	for ( int i = 0; i < grads.size.x * grads.size.y * grads.size.z; i++ )
+	{
+		float f = expected.data[i];
+		if ( f > 0.5 )
+			err += abs(grads.data[i]);
+	}
+	return err * 100;
 }
 
-float train(vector<layer_t*>& layers, tensor_t<float>& data, tensor_t<float>& expected)
-{
-    for (int i = 0; i < layers.size(); i++)
-    {
-        if (i == 0)
-            activate(layers[i], data);
-        else
-            activate(layers[i], layers[i - 1]->out);
-    }
-
-    tensor_t<float>& preds = layers.back()->out;
-float max_val = *max_element(preds.data, preds.data + preds.size.x * preds.size.y * preds.size.z);
-float sum = 0;
-for (int i = 0; i < preds.size.x * preds.size.y * preds.size.z; i++)
-    sum += exp(preds.data[i] - max_val);
-for (int i = 0; i < preds.size.x * preds.size.y * preds.size.z; i++)
-    preds.data[i] = exp(preds.data[i] - max_val) / sum;
-
-// Compute Cross-Entropy Loss
-float loss = 0;
-for (int i = 0; i < preds.size.x * preds.size.y * preds.size.z; i++) {
-    float p = preds.data[i];
-    float y = expected.data[i];
-    loss += -y * log(p + 1e-9); // Ensure p is never zero
-}
-
-    tensor_t<float> grads = preds - expected;
-
-    for (int i = layers.size() - 1; i >= 0; i--)
-    {
-        if (i == layers.size() - 1)
-            calc_grads(layers[i], grads);
-        else
-            calc_grads(layers[i], layers[i + 1]->grads_in);
-    }
-
-    for (int i = 0; i < layers.size(); i++)
-    {
-        fix_weights(layers[i]);
-    }
-
-    return loss;
-}
 
 void forward( vector<layer_t*>& layers, tensor_t<float>& data )
 {
@@ -84,7 +57,11 @@ void forward( vector<layer_t*>& layers, tensor_t<float>& data )
 	}
 }
 
-
+struct case_t
+{
+	tensor_t<float> data;
+	tensor_t<float> out;
+};
 
 uint8_t* read_file( const char* szFile )
 {
@@ -134,11 +111,8 @@ vector<case_t> read_test_cases()
 int main()
 {
 	vector<case_t> cases = read_test_cases();
-    
-    vector<case_t> train_cases, val_cases, test_cases;
-    split_data(cases, train_cases, val_cases, test_cases);
-	    int num_epochs = 50;
-  vector<layer_t*> layers;
+
+	vector<layer_t*> layers;
 
 	conv_layer_t * layer1 = new conv_layer_t( 1, 5, 8, cases[0].data.size );		// 28 * 28 * 1 -> 24 * 24 * 8
 	relu_layer_t * layer2 = new relu_layer_t( layer1->out.size );
@@ -152,47 +126,81 @@ int main()
 
 
 
- for (int epoch = 0; epoch < num_epochs; epoch++) {
-        float train_loss = 0;
-        for (auto& t : train_cases) {
-            float xerr = train(layers, t.data, t.out);
-            train_loss += xerr;
-        }
-        train_loss /= train_cases.size();
-        cout << "Epoch " << epoch << " Training Loss: " << train_loss << endl;
+	float amse = 0;
+	int ic = 0;
 
-        // Validation
-        float val_loss = 0;
-        for (auto& v : val_cases) {
-            forward(layers, v.data);
-            tensor_t<float>& out = layers.back()->out;
-            float case_loss = 0;
-            for (int i = 0; i < out.size.x * out.size.y * out.size.z; i++) {
-                float p = out.data[i];
-                float y = v.out.data[i];
-                case_loss += -y * log(p + 1e-9);
-            }
-            val_loss += case_loss;
-        }
-        val_loss /= val_cases.size();
-        cout << "Epoch " << epoch << " Validation Loss: " << val_loss << endl;
-    }
+	for ( long ep = 0; ep < 100000; )
+	{
 
-    // Testing
-    float test_loss = 0;
-    for (auto& t : test_cases) {
-        forward(layers, t.data);
-        tensor_t<float>& out = layers.back()->out;
-        float case_loss = 0;
-        for (int i = 0; i < out.size.x * out.size.y * out.size.z; i++) {
-            float p = out.data[i];
-            float y = t.out.data[i];
-            case_loss += -y * log(p + 1e-9);
-        }
-        test_loss += case_loss;
-    }
-    test_loss /= test_cases.size();
-    cout << "Test Loss: " << test_loss << endl;
+		for ( case_t& t : cases )
+		{
+			float xerr = train( layers, t.data, t.out );
+			amse += xerr;
 
-    return 0;
+			ep++;
+			ic++;
+
+			if ( ep % 1000 == 0 )
+				cout << "case " << ep << " err=" << amse/ic << endl;
+
+			// if ( GetAsyncKeyState( VK_F1 ) & 0x8000 )
+			// {
+			//	   printf( "err=%.4f%\n", amse / ic  );
+			//	   goto end;
+			// }
+		}
+	}
+	// end:
+
+
+
+	while ( true )
+	{
+		uint8_t * data = read_file( "test.ppm" );
+
+		if ( data )
+		{
+			uint8_t * usable = data;
+
+			while ( *(uint32_t*)usable != 0x0A353532 )
+				usable++;
+
+#pragma pack(push, 1)
+			struct RGB
+			{
+				uint8_t r, g, b;
+			};
+#pragma pack(pop)
+
+			RGB * rgb = (RGB*)usable;
+
+			tensor_t<float> image(28, 28, 1);
+			for ( int i = 0; i < 28; i++ )
+			{
+				for ( int j = 0; j < 28; j++ )
+				{
+					RGB rgb_ij = rgb[i * 28 + j];
+					image( j, i, 0 ) = (((float)rgb_ij.r
+							     + rgb_ij.g
+							     + rgb_ij.b)
+							    / (3.0f*255.f));
+				}
+			}
+
+			forward( layers, image );
+			tensor_t<float>& out = layers.back()->out;
+			for ( int i = 0; i < 10; i++ )
+			{
+				printf( "[%i] %f\n", i, out( i, 0, 0 )*100.0f );
+			}
+
+			delete[] data;
+		}
+
+		struct timespec wait;
+		wait.tv_sec = 1;
+		wait.tv_nsec = 0;
+		nanosleep(&wait, nullptr);
+	}
+	return 0;
 }
