@@ -1,8 +1,7 @@
 #pragma once
-#include "tensor_t.h"
 #include "optimization_method.h"
 #include "fc_layer.h"
-#include "pool_layer_t.h"
+#include "pool_layer_t.cuh"
 #include "relu_layer_t.h"
 #include "conv_layer_t.h"
 #include "dropout_layer_t.h"
