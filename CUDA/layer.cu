@@ -77,15 +77,15 @@ void Layer::bp_clear()
 }
 
 
-__device__ float step_function(float v)
+__device__ float activation_function(float v)
 {
 	return 1 / (1 + exp(-v));
 }
 
-__global__ void apply_step_function_kernel(float *input, float *output, int N) {
+__global__ void apply_activation_function_kernel(float *input, float *output, int N) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < N) {
-        output[i] = step_function(input[i]);
+        output[i] = activation_function(input[i]);
     }
 }
 
@@ -106,7 +106,7 @@ __global__ void apply_grad(float *output, float *grad, const int N)
 	const int size = blockDim.x * gridDim.x;
 
 	for (int idx = N * pos / size; idx < N * (pos+1) / size; ++idx) {
-		output[idx] += dt * grad[idx];
+		output[idx] += LEARNING_RATE * grad[idx];
 	}
 }
 

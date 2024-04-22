@@ -1,12 +1,15 @@
 #include <cstdlib>
 #include <vector>
 #include <memory>
+#include <cmath>
+#include <cstdlib>
+#include <cstring>
 
 #ifndef LAYER_H
 #define LAYER_H
 #endif
 
-const static float dt = 1.0E-01f;
+#define LEARNING_RATE 0.01
 const static float threshold = 1.0E-02f;
 
 class Layer {
@@ -31,11 +34,8 @@ class Layer {
 	void clear();
 	void bp_clear();
 };
-#include <cmath>
-#include <cstdlib>
-#include <cstring>
 
-// Constructor
+// Constructor: initializes layer dimensions and allocates memory for neuron and weight data
 Layer::Layer(int M, int N, int O) : M(M), N(N), O(O) {
     output = new float[O]();
     preact = new float[O]();
@@ -45,6 +45,7 @@ Layer::Layer(int M, int N, int O) : M(M), N(N), O(O) {
     d_preact = new float[O]();
     d_weight = new float[M * N]();
 
+    // Initialize biases and weights with random values between -0.5 and 0.5
     for (int i = 0; i < N; ++i) {
         bias[i] = 0.5f - static_cast<float>(rand()) / RAND_MAX;
 
@@ -54,7 +55,8 @@ Layer::Layer(int M, int N, int O) : M(M), N(N), O(O) {
     }
 }
 
-// Destructor
+
+// Destructor: frees dynamically allocated memory
 Layer::~Layer() {
     delete[] output;
     delete[] preact;
@@ -65,29 +67,35 @@ Layer::~Layer() {
     delete[] d_weight;
 }
 
+// Copies input data to the layer's output buffer
 void Layer::setOutput(float *data) {
     memcpy(output, data, sizeof(float) * O);
 }
 
+// Clears the output and preactivation buffers (set to zero)
 void Layer::clear() {
     memset(output, 0, sizeof(float) * O);
     memset(preact, 0, sizeof(float) * O);
 }
 
+// Clears the derivatives of the weights (set to zero), used in backpropagation
 void Layer::bp_clear() {
     memset(d_weight, 0, sizeof(float) * M * N);
 }
 
-float step_function(float v) {
+// Activation function, applies sigmoid function to a value
+float activation_function(float v) {
     return 1 / (1 + exp(-v));
 }
 
-void apply_step_function(float *input, float *output, int N) {
+// Applies the activation function to each element in the input array
+void apply_activation_function(float *input, float *output, int N) {
     for (int i = 0; i < N; ++i) {
-        output[i] = step_function(input[i]);
+        output[i] = activation_function(input[i]);
     }
 }
 
+// Calculates error for each output neuron based on expected output 'Y'
 void makeError(float *err, float *output, unsigned int Y, int N) {
     for (int i = 0; i < N; ++i) {
         err[i] = (i == Y) ? 1.0f - output[i] : -output[i];
@@ -96,10 +104,10 @@ void makeError(float *err, float *output, unsigned int Y, int N) {
 
 void apply_grad(float *output, float *grad, int N) {
     for (int i = 0; i < N; ++i) {
-        output[i] += dt * grad[i];
+        output[i] += LEARNING_RATE* grad[i];
     }
 }
-
+// Computes the preactivation values for a convolutional layer C1
 void fp_preact_c1(const float input[28][28], float preact[6][24][24], const float weight[6][5][5]) {
     for (int i = 0; i < 6; ++i) {
         for (int j = 0; j < 24; ++j) {
@@ -108,8 +116,6 @@ void fp_preact_c1(const float input[28][28], float preact[6][24][24], const floa
             }
         }
     }
-
-    #pragma omp parallel for collapse(3)
     for (int m = 0; m < 6; ++m) {
         for (int x = 0; x < 24; ++x) {
             for (int y = 0; y < 24; ++y) {
@@ -127,53 +133,50 @@ void fp_preact_c1(const float input[28][28], float preact[6][24][24], const floa
 
 
 
+// Adds biases to the preactivation values of the convolutional layer C1
 void fp_bias_c1(float preact[6][24][24], const float bias[6]) {
-    // Iterate over each feature map
-    #pragma omp parallel for collapse(2)
-    for (int i = 0; i < 6; ++i) { // There are 6 feature maps
-        // Iterate over each element in the feature map
-        for (int x = 0; x < 24; ++x) { // Each feature map is 24x24
+    // Add bias to each element in the feature map
+    for (int i = 0; i < 6; ++i) {
+        for (int x = 0; x < 24; ++x) {
             for (int y = 0; y < 24; ++y) {
-                // Add the corresponding bias to each element
                 preact[i][x][y] += bias[i];
             }
         }
     }
 }
-
+// Forward pass for the subsampling layer S1, applying weighted sum pooling
 void fp_preact_s1(const float input[6][24][24], float preact[6][6][6], const float weight[1][4][4]) {
-    // Initialize preact to zero before accumulation
-    #pragma omp parallel for collapse(3)
+    
     for (int m = 0; m < 6; ++m)
         for (int x = 0; x < 6; ++x)
             for (int y = 0; y < 6; ++y)
                 preact[m][x][y] = 0;
 
-    // Nested loops to simulate the behavior of the CUDA kernel
-    #pragma omp parallel for collapse(3)
-    for (int m = 0; m < 6; ++m) {          // for each output feature map
-        for (int x = 0; x < 6; ++x) {      // output dimensions are reduced by factor of 4
+    
+ 
+    for (int m = 0; m < 6; ++m) {          
+        for (int x = 0; x < 6; ++x) {      
             for (int y = 0; y < 6; ++y) {
                 float sum = 0.0f;
-                for (int i = 0; i < 4; ++i) {  // kernel width
-                    for (int j = 0; j < 4; ++j) {  // kernel height
-                        // Applying weights on input and summing up to form the pooled output
+                for (int i = 0; i < 4; ++i) {  
+                    for (int j = 0; j < 4; ++j) {  
+                        
                         sum += weight[0][i][j] * input[m][x * 4 + i][y * 4 + j];
                     }
                 }
                 #pragma omp atomic
-                preact[m][x][y] += sum; // Pooling operation with weighted sum
+                preact[m][x][y] += sum; 
             }
         }
     }
 }
 
+// Adds bias to the preactivation values of subsampling layer S1
 void fp_bias_s1(float preact[6][6][6], const float bias[1]) {
-    // Iterate through each element of the 3D array and add the bias
-    #pragma omp parallel for collapse(3)
-    for (int i = 0; i < 6; ++i) {     // first dimension
-        for (int j = 0; j < 6; ++j) { // second dimension
-            for (int k = 0; k < 6; ++k) { // third dimension
+    // Add bias to each output in the feature map
+    for (int i = 0; i < 6; ++i) {
+        for (int j = 0; j < 6; ++j) {
+            for (int k = 0; k < 6; ++k) {
                 preact[i][j][k] += bias[0];
             }
         }
@@ -181,20 +184,15 @@ void fp_bias_s1(float preact[6][6][6], const float bias[1]) {
 }
 
 
+// Computes preactivation for a fully connected layer F
 void fp_preact_f(const float input[6][6][6], float preact[10], const float weight[10][6][6][6]) {
-    // Initialize the output preactivation array to zero
-    #pragma omp parallel for
+    // Initialize preactivation values
     for (int i = 0; i < 10; ++i) {
         preact[i] = 0;
-    }
-
-    // Compute the dot product of the input with weights for each output unit
-    #pragma omp parallel for collapse(3) // parallelize the nested loops
-    for (int i = 0; i < 10; ++i) { // output dimension
-        for (int j = 0; j < 6; ++j) { // first dimension of input
-            for (int k = 0; k < 6; ++k) { // second dimension of input
-                for (int l = 0; l < 6; ++l) { // third dimension of input
-                    #pragma omp atomic
+        // Perform dot product operation
+        for (int j = 0; j < 6; ++j) {
+            for (int k = 0; k < 6; ++k) {
+                for (int l = 0; l < 6; ++l) {
                     preact[i] += weight[i][j][k][l] * input[j][k][l];
                 }
             }
@@ -203,22 +201,21 @@ void fp_preact_f(const float input[6][6][6], float preact[10], const float weigh
 }
 
 
+// Adds biases to the preactivation values of a fully connected layer F
 void fp_bias_f(float preact[10], const float bias[10]) {
-    // Iterate through each element of the preact array and add the corresponding bias
+    // Add bias to each output neuron
     for (int i = 0; i < 10; ++i) {
         preact[i] += bias[i];
     }
 }
 
-
+// Backpropagation for weights of the fully connected layer F
 void bp_weight_f(float d_weight[10][6][6][6], const float d_preact[10], const float p_output[6][6][6]) {
-    // Iterate over all indices for weight updates
-    #pragma omp parallel for collapse(4)
-    for (int i = 0; i < 10; ++i) { // over output dimension
-        for (int j = 0; j < 6; ++j) { // first dimension of input
-            for (int k = 0; k < 6; ++k) { // second dimension of input
-                for (int l = 0; l < 6; ++l) { // third dimension of input
-                    // Calculate the gradient for each weight
+    // Calculate gradients for weights based on output errors and input activations
+    for (int i = 0; i < 10; ++i) {
+        for (int j = 0; j < 6; ++j) {
+            for (int k = 0; k < 6; ++k) {
+                for (int l = 0; l < 6; ++l) {
                     d_weight[i][j][k][l] = d_preact[i] * p_output[j][k][l];
                 }
             }
@@ -226,16 +223,17 @@ void bp_weight_f(float d_weight[10][6][6][6], const float d_preact[10], const fl
     }
 }
 
+// Backpropagation for biases of the fully connected layer F
 void bp_bias_f(float bias[10], const float d_preact[10]) {
-    // Iterate over each bias and update it based on the gradient
+    // Update biases based on the gradient of preactivation
     for (int i = 0; i < 10; ++i) {
-        bias[i] += dt * d_preact[i];
+        bias[i] += LEARNING_RATE * d_preact[i];
     }
 }
 
-
+// Backpropagation output gradient calculation for subsampling layer S1
 void bp_output_s1(float d_output[6][6][6], const float n_weight[10][6][6][6], const float nd_preact[10]) {
-    // Initialize d_output to zero before accumulation
+    
     for (int i = 0; i < 6; ++i) {
         for (int j = 0; j < 6; ++j) {
             for (int k = 0; k < 6; ++k) {
@@ -243,12 +241,11 @@ void bp_output_s1(float d_output[6][6][6], const float n_weight[10][6][6][6], co
             }
         }
     }
-
-    // Compute the gradient contribution from each neuron's weight and pre-activation gradient
-    for (int i1 = 0; i1 < 10; ++i1) { // over each output neuron
-        for (int i2 = 0; i2 < 6; ++i2) { // first dimension of output
-            for (int i3 = 0; i3 < 6; ++i3) { // second dimension of output
-                for (int i4 = 0; i4 < 6; ++i4) { // third dimension of output
+    // Calculate output gradient contributions from subsequent layers
+    for (int i1 = 0; i1 < 10; ++i1) { 
+        for (int i2 = 0; i2 < 6; ++i2) { 
+            for (int i3 = 0; i3 < 6; ++i3) { 
+                for (int i4 = 0; i4 < 6; ++i4) { 
                     d_output[i2][i3][i4] += n_weight[i1][i2][i3][i4] * nd_preact[i1];
                 }
             }
@@ -257,21 +254,20 @@ void bp_output_s1(float d_output[6][6][6], const float n_weight[10][6][6][6], co
 }
 
 
+// Backpropagation preactivation gradient calculation for subsampling layer S1
 void bp_preact_s1(float d_preact[6][6][6], const float d_output[6][6][6], const float preact[6][6][6]) {
-    // Iterate through each element to calculate gradient of preactivation
+    // Calculate gradient of preactivation using the derivative of the activation function
     for (int i = 0; i < 6; ++i) {
         for (int j = 0; j < 6; ++j) {
             for (int k = 0; k < 6; ++k) {
-                float o = step_function(preact[i][j][k]);
+                float o = activation_function(preact[i][j][k]);
                 d_preact[i][j][k] = d_output[i][j][k] * o * (1 - o);
             }
         }
     }
 }
-
+// Backpropagation for weights of subsampling layer S1
 void bp_weight_s1(float d_weight[1][4][4], const float d_preact[6][6][6], const float p_output[6][24][24]) {
-    // Initialize d_weight to zero before accumulation
-    #pragma omp parallel for collapse(3)
     for (int i = 0; i < 1; ++i) {
         for (int j = 0; j < 4; ++j) {
             for (int k = 0; k < 4; ++k) {
@@ -279,16 +275,13 @@ void bp_weight_s1(float d_weight[1][4][4], const float d_preact[6][6][6], const 
             }
         }
     }
-
-    // Compute the gradient for each weight
-    #pragma omp parallel for collapse(5)
-    for (int i1 = 0; i1 < 1; ++i1) { // single weight map
-        for (int i2 = 0; i2 < 4; ++i2) { // kernel width
-            for (int i3 = 0; i3 < 4; ++i3) { // kernel height
-                for (int i4 = 0; i4 < 6; ++i4) { // over each output feature map dimension
-                    for (int i5 = 0; i5 < 6; ++i5) { // first dimension of output
-                        for (int i6 = 0; i6 < 6; ++i6) { // second dimension of output
-                            // Calculate the corresponding output location and accumulate the gradient
+    for (int i1 = 0; i1 < 1; ++i1) { 
+        for (int i2 = 0; i2 < 4; ++i2) { 
+            for (int i3 = 0; i3 < 4; ++i3) { 
+                for (int i4 = 0; i4 < 6; ++i4) { 
+                    for (int i5 = 0; i5 < 6; ++i5) { 
+                        for (int i6 = 0; i6 < 6; ++i6) { 
+                            
                             #pragma omp atomic
                             d_weight[i1][i2][i3] += d_preact[i4][i5][i6] * p_output[i4][i5 * 4 + i2][i6 * 4 + i3];
                         }
@@ -299,11 +292,11 @@ void bp_weight_s1(float d_weight[1][4][4], const float d_preact[6][6][6], const 
     }
 }
 
+// Backpropagation for bias of subsampling layer S1
 void bp_bias_s1(float bias[1], const float d_preact[6][6][6]) {
+    // Calculate gradient contribution for bias and update
     float sum = 0.0f;
-    int total_elements = 6 * 6 * 6; // Total elements in the d_preact array
-
-    // Sum all gradient contributions
+    int total_elements = 6 * 6 * 6;
     for (int i = 0; i < 6; ++i) {
         for (int j = 0; j < 6; ++j) {
             for (int k = 0; k < 6; ++k) {
@@ -311,13 +304,12 @@ void bp_bias_s1(float bias[1], const float d_preact[6][6][6]) {
             }
         }
     }
-
-    // Update the bias term by averaging the gradients
-    bias[0] += dt * sum / total_elements;
+    bias[0] += LEARNING_RATE * sum / total_elements;
 }
 
+// Backpropagation output gradient calculation for convolutional layer C1
 void bp_output_c1(float d_output[6][24][24], const float n_weight[1][4][4], const float nd_preact[6][6][6]) {
-    // Initialize d_output to zero before accumulation
+    
     for (int i = 0; i < 6; ++i) {
         for (int j = 0; j < 24; ++j) {
             for (int k = 0; k < 24; ++k) {
@@ -325,15 +317,13 @@ void bp_output_c1(float d_output[6][24][24], const float n_weight[1][4][4], cons
             }
         }
     }
-
-    // Calculate the contribution of each neuron's error
-    for (int i1 = 0; i1 < 1; ++i1) { // only one set of weights
-        for (int i2 = 0; i2 < 4; ++i2) { // kernel width
-            for (int i3 = 0; i3 < 4; ++i3) { // kernel height
-                for (int i4 = 0; i4 < 6; ++i4) { // over each output feature map dimension
-                    for (int i5 = 0; i5 < 6; ++i5) { // reduced dimension due to pooling or stride
-                        for (int i6 = 0; i6 < 6; ++i6) { // reduced dimension due to pooling or stride
-                            // Map the small dimension back to the original large dimension and accumulate the error
+    for (int i1 = 0; i1 < 1; ++i1) { 
+        for (int i2 = 0; i2 < 4; ++i2) { 
+            for (int i3 = 0; i3 < 4; ++i3) { 
+                for (int i4 = 0; i4 < 6; ++i4) { 
+                    for (int i5 = 0; i5 < 6; ++i5) { 
+                        for (int i6 = 0; i6 < 6; ++i6) { 
+                            
                             int x = i5 * 4 + i2;
                             int y = i6 * 4 + i3;
                             d_output[i4][x][y] += n_weight[i1][i2][i3] * nd_preact[i4][i5][i6];
@@ -345,19 +335,16 @@ void bp_output_c1(float d_output[6][24][24], const float n_weight[1][4][4], cons
     }
 }
 
+// Backpropagation preactivation gradient calculation for convolutional layer C1
 void bp_preact_c1(float d_preact[6][24][24], const float d_output[6][24][24], const float preact[6][24][24]) {
-    // Assume step_function is a sigmoid activation function
+    // Calculate gradient of preactivation using the derivative of the activation function
     auto sigmoid = [](float x) {
         return 1.0f / (1.0f + exp(-x));
     };
-
-    // Assume the derivative of the sigmoid function
     auto sigmoid_derivative = [](float x) {
         float s = 1.0f / (1.0f + exp(-x));
         return s * (1 - s);
     };
-
-    // Compute the gradient of pre-activation for each element
     for (int i = 0; i < 6; ++i) {
         for (int j = 0; j < 24; ++j) {
             for (int k = 0; k < 24; ++k) {
@@ -367,9 +354,9 @@ void bp_preact_c1(float d_preact[6][24][24], const float d_output[6][24][24], co
         }
     }
 }
-
+// Backpropagation for weights of convolutional layer C1
 void bp_weight_c1(float d_weight[6][5][5], const float d_preact[6][24][24], const float p_output[28][28]) {
-    // Initialize d_weight to zero before accumulation
+    
     for (int i = 0; i < 6; ++i) {
         for (int j = 0; j < 5; ++j) {
             for (int k = 0; k < 5; ++k) {
@@ -377,10 +364,7 @@ void bp_weight_c1(float d_weight[6][5][5], const float d_preact[6][24][24], cons
             }
         }
     }
-
-    float d = 24.0f * 24.0f;  // Normalization factor
-
-    // Compute the gradient for each weight
+    float d = 24.0f * 24.0f;  
     for (int i1 = 0; i1 < 6; ++i1) {
         for (int i2 = 0; i2 < 5; ++i2) {
             for (int i3 = 0; i3 < 5; ++i3) {
@@ -394,21 +378,16 @@ void bp_weight_c1(float d_weight[6][5][5], const float d_preact[6][24][24], cons
     }
 }
 
-
+// Backpropagation for bias of convolutional layer C1
 void bp_bias_c1(float bias[6], const float d_preact[6][24][24]) {
-    // Initialize accumulators for each bias to zero before accumulation
+    // Calculate gradient contribution for bias and update
     float accumulators[6] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
-
-    float d = 24.0f * 24.0f;  // Normalization factor
-
-    // Aggregate gradients for each bias
     for (int i = 0; i < 6; ++i) {
         for (int j = 0; j < 24; ++j) {
             for (int k = 0; k < 24; ++k) {
                 accumulators[i] += d_preact[i][j][k];
             }
         }
-        // Update each bias by adding the normalized accumulated gradient
-        bias[i] += dt * accumulators[i] / d;
+        bias[i] += LEARNING_RATE * accumulators[i] / (24.0 * 24.0);
     }
 }

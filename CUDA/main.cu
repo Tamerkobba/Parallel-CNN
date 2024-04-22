@@ -70,15 +70,15 @@ static double forward_pass(double data[28][28])
 	
 	fp_preact_c1<<<64, 64>>>((float (*)[28])l_input.output, (float (*)[24][24])l_c1.preact, (float (*)[5][5])l_c1.weight);
 	fp_bias_c1<<<64, 64>>>((float (*)[24][24])l_c1.preact, l_c1.bias);
-	apply_step_function<<<64, 64>>>(l_c1.preact, l_c1.output, l_c1.O);
+	apply_activation_function<<<64, 64>>>(l_c1.preact, l_c1.output, l_c1.O);
 
 	fp_preact_s1<<<64, 64>>>((float (*)[24][24])l_c1.output, (float (*)[6][6])l_s1.preact, (float (*)[4][4])l_s1.weight);
 	fp_bias_s1<<<64, 64>>>((float (*)[6][6])l_s1.preact, l_s1.bias);
-	apply_step_function<<<64, 64>>>(l_s1.preact, l_s1.output, l_s1.O);
+	apply_activation_function<<<64, 64>>>(l_s1.preact, l_s1.output, l_s1.O);
 
 	fp_preact_f<<<64, 64>>>((float (*)[6][6])l_s1.output, l_f.preact, (float (*)[6][6][6])l_f.weight);
 	fp_bias_f<<<64, 64>>>(l_f.preact, l_f.bias);
-	apply_step_function<<<64, 64>>>(l_f.preact, l_f.output, l_f.O);
+	apply_activation_function<<<64, 64>>>(l_f.preact, l_f.output, l_f.O);
 	
 	end = clock();
 	return ((double) (end - start)) / CLOCKS_PER_SEC;
