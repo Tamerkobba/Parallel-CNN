@@ -1,6 +1,7 @@
 #include <cstdlib>
 #include <vector>
 #include <memory>
+#include <mpi.h>
 
 #ifndef LAYER_H
 #define LAYER_H
@@ -142,42 +143,62 @@ void fp_bias_c1(float preact[6][24][24], const float bias[6]) {
 }
 
 void fp_preact_s1(const float input[6][24][24], float preact[6][6][6], const float weight[1][4][4]) {
+    MPI_Init(NULL, NULL);
+    int p;
+    MPI_Comm_size(MPI_COMM_WORLD, &p);
+
+    int r;
+    MPI_Comm_rank(MPI_COMM_WORLD, &r)
+    
     // Initialize preact to zero before accumulation
-    #pragma omp parallel for collapse(3)
+
     for (int m = 0; m < 6; ++m)
         for (int x = 0; x < 6; ++x)
             for (int y = 0; y < 6; ++y)
                 preact[m][x][y] = 0;
 
     // Nested loops to simulate the behavior of the CUDA kernel
-    #pragma omp parallel for collapse(3)
-    for (int m = 0; m < 6; ++m) {          // for each output feature map
-        for (int x = 0; x < 6; ++x) {      // output dimensions are reduced by factor of 4
-            for (int y = 0; y < 6; ++y) {
-                float sum = 0.0f;
-                for (int i = 0; i < 4; ++i) {  // kernel width
-                    for (int j = 0; j < 4; ++j) {  // kernel height
-                        // Applying weights on input and summing up to form the pooled output
-                        sum += weight[0][i][j] * input[m][x * 4 + i][y * 4 + j];
-                    }
-                }
-                #pragma omp atomic
-                preact[m][x][y] += sum; // Pooling operation with weighted sum
+    int N = ceil(6*6*6/(float)p);
+    for (int ind = r * N; ind < min((r + 1) * N, 6*6*6); ind++) {
+        int m = ind / 36;
+        int x = ind / 6 - m * 6;
+        int y = ind - m * 6 * 6 - x * 6;
+        float sum = 0.0f;
+        for (int i = 0; i < 4; ++i) {  
+            for (int j = 0; j < 4; ++j) {  
+                sum += weight[0][i][j] * input[m][x * 4 + i][y * 4 + j];
             }
         }
+        MPI_Reduce(&sum, &preact[m][x][y], 1, MPI_FLOAT, MPI_SUM, 0,MPI_COMM_WORLD);
     }
+    MPI_Finalize();
 }
 
 void fp_bias_s1(float preact[6][6][6], const float bias[1]) {
-    // Iterate through each element of the 3D array and add the bias
-    #pragma omp parallel for collapse(3)
-    for (int i = 0; i < 6; ++i) {     // first dimension
-        for (int j = 0; j < 6; ++j) { // second dimension
-            for (int k = 0; k < 6; ++k) { // third dimension
-                preact[i][j][k] += bias[0];
-            }
-        }
+    MPI_Init(NULL, NULL);
+    int p;
+    MPI_Comm_size(MPI_COMM_WORLD, &p);
+
+    int r;
+    MPI_Comm_rank(MPI_COMM_WORLD, &r)
+    
+    // Initialize preact to zero before accumulation
+    float placeHolder[6][6][6];
+    for (int m = 0; m < 6; ++m)
+        for (int x = 0; x < 6; ++x)
+            for (int y = 0; y < 6; ++y)
+                placeHolder[m][x][y] = 0;
+
+    // Nested loops to simulate the behavior of the CUDA kernel
+    int N = ceil(6*6*6/(float)p);
+    for (int ind = r * N; ind < min((r + 1) * N, 6*6*6); ind++) {
+        int m = ind / 36;
+        int x = ind / 6 - m * 6;
+        int y = ind - m * 6 * 6 - x * 6;
+        placeHolder[m][x][y] += bias[0];
     }
+    MPI_Reduce(placeHolder, preact, 1, MPI_FLOAT, MPI_BOR, 0, MPI_COMM_WORLD);
+    MPI_Finalize();
 }
 
 
