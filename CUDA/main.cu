@@ -67,8 +67,11 @@ static double forward_pass(double data[28][28])
 	start = clock();
 
 	l_input.setOutput((float *)input);
-	
-	fp_preact_c1<<<64, 64>>>((float (*)[28])l_input.output, (float (*)[24][24])l_c1.preact, (float (*)[5][5])l_c1.weight);
+dim3 threadsPerBlock(16, 16);
+dim3 numBlocks((24 + threadsPerBlock.x - 1) / threadsPerBlock.x,
+               (24 + threadsPerBlock.y - 1) / threadsPerBlock.y,
+               6); 
+	fp_preact_c1<<<numBlocks, threadsPerBlock>>>((float (*)[28])l_input.output, (float (*)[24][24])l_c1.preact, (float (*)[5][5])l_c1.weight);
 	fp_bias_c1<<<64, 64>>>((float (*)[24][24])l_c1.preact, l_c1.bias);
 	apply_activation_function<<<64, 64>>>(l_c1.preact, l_c1.output, l_c1.O);
 

@@ -109,13 +109,6 @@ void apply_grad(float *output, float *grad, int N) {
 }
 // Computes the preactivation values for a convolutional layer C1
 void fp_preact_c1(const float input[28][28], float preact[6][24][24], const float weight[6][5][5]) {
-    for (int i = 0; i < 6; ++i) {
-        for (int j = 0; j < 24; ++j) {
-            for (int k = 0; k < 24; ++k) {
-                preact[i][j][k] = 0;
-            }
-        }
-    }
     for (int m = 0; m < 6; ++m) {
         for (int x = 0; x < 24; ++x) {
             for (int y = 0; y < 24; ++y) {
@@ -146,14 +139,6 @@ void fp_bias_c1(float preact[6][24][24], const float bias[6]) {
 }
 // Forward pass for the subsampling layer S1, applying weighted sum pooling
 void fp_preact_s1(const float input[6][24][24], float preact[6][6][6], const float weight[1][4][4]) {
-    
-    for (int m = 0; m < 6; ++m)
-        for (int x = 0; x < 6; ++x)
-            for (int y = 0; y < 6; ++y)
-                preact[m][x][y] = 0;
-
-    
- 
     for (int m = 0; m < 6; ++m) {          
         for (int x = 0; x < 6; ++x) {      
             for (int y = 0; y < 6; ++y) {
@@ -164,7 +149,7 @@ void fp_preact_s1(const float input[6][24][24], float preact[6][6][6], const flo
                         sum += weight[0][i][j] * input[m][x * 4 + i][y * 4 + j];
                     }
                 }
-                #pragma omp atomic
+              
                 preact[m][x][y] += sum; 
             }
         }
@@ -268,13 +253,6 @@ void bp_preact_s1(float d_preact[6][6][6], const float d_output[6][6][6], const 
 }
 // Backpropagation for weights of subsampling layer S1
 void bp_weight_s1(float d_weight[1][4][4], const float d_preact[6][6][6], const float p_output[6][24][24]) {
-    for (int i = 0; i < 1; ++i) {
-        for (int j = 0; j < 4; ++j) {
-            for (int k = 0; k < 4; ++k) {
-                d_weight[i][j][k] = 0;
-            }
-        }
-    }
     for (int i1 = 0; i1 < 1; ++i1) { 
         for (int i2 = 0; i2 < 4; ++i2) { 
             for (int i3 = 0; i3 < 4; ++i3) { 
@@ -309,14 +287,6 @@ void bp_bias_s1(float bias[1], const float d_preact[6][6][6]) {
 
 // Backpropagation output gradient calculation for convolutional layer C1
 void bp_output_c1(float d_output[6][24][24], const float n_weight[1][4][4], const float nd_preact[6][6][6]) {
-    
-    for (int i = 0; i < 6; ++i) {
-        for (int j = 0; j < 24; ++j) {
-            for (int k = 0; k < 24; ++k) {
-                d_output[i][j][k] = 0;
-            }
-        }
-    }
     for (int i1 = 0; i1 < 1; ++i1) { 
         for (int i2 = 0; i2 < 4; ++i2) { 
             for (int i3 = 0; i3 < 4; ++i3) { 
@@ -356,14 +326,6 @@ void bp_preact_c1(float d_preact[6][24][24], const float d_output[6][24][24], co
 }
 // Backpropagation for weights of convolutional layer C1
 void bp_weight_c1(float d_weight[6][5][5], const float d_preact[6][24][24], const float p_output[28][28]) {
-    
-    for (int i = 0; i < 6; ++i) {
-        for (int j = 0; j < 5; ++j) {
-            for (int k = 0; k < 5; ++k) {
-                d_weight[i][j][k] = 0;
-            }
-        }
-    }
     float d = 24.0f * 24.0f;  
     for (int i1 = 0; i1 < 6; ++i1) {
         for (int i2 = 0; i2 < 5; ++i2) {

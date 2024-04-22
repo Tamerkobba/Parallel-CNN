@@ -7,7 +7,6 @@
 #ifndef LAYER_H
 #define LAYER_H
 #endif
-
 #define LEARNING_RATE 0.01
 const static float threshold = 1.0E-02f;
 
