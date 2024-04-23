@@ -107,9 +107,7 @@ void fp_preact_c1(const float input[28][28], float preact[6][24][24], const floa
                 preact[i][j][k] = 0;
             }
         }
-    }
-
-    #pragma omp parallel for collapse(3)
+    } 
     for (int m = 0; m < 6; ++m) {
         for (int x = 0; x < 24; ++x) {
             for (int y = 0; y < 24; ++y) {
@@ -129,7 +127,7 @@ void fp_preact_c1(const float input[28][28], float preact[6][24][24], const floa
 
 void fp_bias_c1(float preact[6][24][24], const float bias[6]) {
     // Iterate over each feature map
-    #pragma omp parallel for collapse(2)
+    
     for (int i = 0; i < 6; ++i) { // There are 6 feature maps
         // Iterate over each element in the feature map
         for (int x = 0; x < 24; ++x) { // Each feature map is 24x24
@@ -143,14 +141,14 @@ void fp_bias_c1(float preact[6][24][24], const float bias[6]) {
 
 void fp_preact_s1(const float input[6][24][24], float preact[6][6][6], const float weight[1][4][4]) {
     // Initialize preact to zero before accumulation
-    #pragma omp parallel for collapse(3)
+    
     for (int m = 0; m < 6; ++m)
         for (int x = 0; x < 6; ++x)
             for (int y = 0; y < 6; ++y)
                 preact[m][x][y] = 0;
 
     // Nested loops to simulate the behavior of the CUDA kernel
-    #pragma omp parallel for collapse(3)
+    
     for (int m = 0; m < 6; ++m) {          // for each output feature map
         for (int x = 0; x < 6; ++x) {      // output dimensions are reduced by factor of 4
             for (int y = 0; y < 6; ++y) {
@@ -161,7 +159,7 @@ void fp_preact_s1(const float input[6][24][24], float preact[6][6][6], const flo
                         sum += weight[0][i][j] * input[m][x * 4 + i][y * 4 + j];
                     }
                 }
-                #pragma omp atomic
+                
                 preact[m][x][y] += sum; // Pooling operation with weighted sum
             }
         }
@@ -170,7 +168,7 @@ void fp_preact_s1(const float input[6][24][24], float preact[6][6][6], const flo
 
 void fp_bias_s1(float preact[6][6][6], const float bias[1]) {
     // Iterate through each element of the 3D array and add the bias
-    #pragma omp parallel for collapse(3)
+    
     for (int i = 0; i < 6; ++i) {     // first dimension
         for (int j = 0; j < 6; ++j) { // second dimension
             for (int k = 0; k < 6; ++k) { // third dimension
@@ -183,18 +181,18 @@ void fp_bias_s1(float preact[6][6][6], const float bias[1]) {
 
 void fp_preact_f(const float input[6][6][6], float preact[10], const float weight[10][6][6][6]) {
     // Initialize the output preactivation array to zero
-    #pragma omp parallel for
+    
     for (int i = 0; i < 10; ++i) {
         preact[i] = 0;
     }
 
     // Compute the dot product of the input with weights for each output unit
-    #pragma omp parallel for collapse(3) // parallelize the nested loops
+    
     for (int i = 0; i < 10; ++i) { // output dimension
         for (int j = 0; j < 6; ++j) { // first dimension of input
             for (int k = 0; k < 6; ++k) { // second dimension of input
                 for (int l = 0; l < 6; ++l) { // third dimension of input
-                    #pragma omp atomic
+                    
                     preact[i] += weight[i][j][k][l] * input[j][k][l];
                 }
             }
@@ -213,7 +211,7 @@ void fp_bias_f(float preact[10], const float bias[10]) {
 
 void bp_weight_f(float d_weight[10][6][6][6], const float d_preact[10], const float p_output[6][6][6]) {
     // Iterate over all indices for weight updates
-    #pragma omp parallel for collapse(4)
+    
     for (int i = 0; i < 10; ++i) { // over output dimension
         for (int j = 0; j < 6; ++j) { // first dimension of input
             for (int k = 0; k < 6; ++k) { // second dimension of input
@@ -271,7 +269,7 @@ void bp_preact_s1(float d_preact[6][6][6], const float d_output[6][6][6], const 
 
 void bp_weight_s1(float d_weight[1][4][4], const float d_preact[6][6][6], const float p_output[6][24][24]) {
     // Initialize d_weight to zero before accumulation
-    #pragma omp parallel for collapse(3)
+    
     for (int i = 0; i < 1; ++i) {
         for (int j = 0; j < 4; ++j) {
             for (int k = 0; k < 4; ++k) {
@@ -281,7 +279,7 @@ void bp_weight_s1(float d_weight[1][4][4], const float d_preact[6][6][6], const 
     }
 
     // Compute the gradient for each weight
-    #pragma omp parallel for collapse(5)
+    
     for (int i1 = 0; i1 < 1; ++i1) { // single weight map
         for (int i2 = 0; i2 < 4; ++i2) { // kernel width
             for (int i3 = 0; i3 < 4; ++i3) { // kernel height
@@ -289,7 +287,7 @@ void bp_weight_s1(float d_weight[1][4][4], const float d_preact[6][6][6], const 
                     for (int i5 = 0; i5 < 6; ++i5) { // first dimension of output
                         for (int i6 = 0; i6 < 6; ++i6) { // second dimension of output
                             // Calculate the corresponding output location and accumulate the gradient
-                            #pragma omp atomic
+                            
                             d_weight[i1][i2][i3] += d_preact[i4][i5][i6] * p_output[i4][i5 * 4 + i2][i6 * 4 + i3];
                         }
                     }

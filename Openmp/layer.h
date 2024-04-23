@@ -1,6 +1,10 @@
 #include <cstdlib>
 #include <vector>
 #include <memory>
+#include <cmath>
+#include <cstdlib>
+#include <cstring>
+#include <omp.h>
 
 #ifndef LAYER_H
 #define LAYER_H
@@ -31,10 +35,6 @@ class Layer {
 	void clear();
 	void bp_clear();
 };
-#include <cmath>
-#include <cstdlib>
-#include <cstring>
-#include <omp.h>
 
 // Constructor
 Layer::Layer(int M, int N, int O) : M(M), N(N), O(O) {
@@ -110,11 +110,12 @@ void fp_preact_c1(const float input[28][28], float preact[6][24][24], const floa
         }
     }
 
-    #pragma omp parallel for collapse(3)
+    #pragma omp parallel for collapse(2)
     for (int m = 0; m < 6; ++m) {
         for (int x = 0; x < 24; ++x) {
             for (int y = 0; y < 24; ++y) {
                 float sum = 0.0f;
+                #pragma omp for reduction(sum:+)
                 for (int i = 0; i < 5; ++i) {
                     for (int j = 0; j < 5; ++j) {
                         sum += input[x + i][y + j] * weight[m][i][j];
@@ -186,12 +187,11 @@ void fp_preact_f(const float input[6][6][6], float preact[10], const float weigh
     }
 
     // Compute the dot product of the input with weights for each output unit
-    #pragma omp parallel for collapse(3) // parallelize the nested loops
+    #pragma omp parallel for collapse(2)
     for (int i = 0; i < 10; ++i) { // output dimension
         for (int j = 0; j < 6; ++j) { // first dimension of input
             for (int k = 0; k < 6; ++k) { // second dimension of input
                 for (int l = 0; l < 6; ++l) { // third dimension of input
-                    #pragma omp atomic
                     preact[i] += weight[i][j][k][l] * input[j][k][l];
                 }
             }
@@ -202,15 +202,15 @@ void fp_preact_f(const float input[6][6][6], float preact[10], const float weigh
 
 void fp_bias_f(float preact[10], const float bias[10]) {
     // Iterate through each element of the preact array and add the corresponding bias
+    #pragma omp parallel for
     for (int i = 0; i < 10; ++i) {
         preact[i] += bias[i];
     }
 }
 
-
 void bp_weight_f(float d_weight[10][6][6][6], const float d_preact[10], const float p_output[6][6][6]) {
     // Iterate over all indices for weight updates
-    #pragma omp parallel for collapse(4)
+    #pragma omp parallel for collapse(3)
     for (int i = 0; i < 10; ++i) { // over output dimension
         for (int j = 0; j < 6; ++j) { // first dimension of input
             for (int k = 0; k < 6; ++k) { // second dimension of input
