@@ -1,12 +1,17 @@
 #define USE_MNIST_LOADER
 #define MNIST_DOUBLE
 #include "mnist.h"
-#include "layer.h"
+#include "layer_c.h"
 
 #include <cuda.h>
 #include <cstdio>
 #include <time.h>
+#include <cuda_runtime.h>
+#include <device_launch_parameters.h>
 
+static float total_convolution_time = 0.0f;
+static float total_pooling_time = 0.0f;
+static float total_fully_connected_time = 0.0f;
 static mnist_data *train_set, *test_set;
 static unsigned int train_cnt, test_cnt;
 
@@ -21,6 +26,11 @@ static unsigned int classify(double data[28][28]);
 static void test();
 static double forward_pass(double data[28][28]);
 static double back_pass();
+
+struct KernelConfig {
+    dim3 blocks;
+    dim3 threads;
+};
 
 static inline void loaddata()
 {
@@ -43,8 +53,11 @@ int main(int argc, const  char **argv)
 	loaddata();
 	learn();
 	test();
+    printf("Total Convolution Time: %f ms\n", total_convolution_time);
+    printf("Total Pooling Time: %f ms\n", total_pooling_time);
+    printf("Total Fully Connected Time: %f ms\n", total_fully_connected_time);
 
-	return 0;
+    return 0;
 }
 
 // Forward propagation of a single row in dataset
@@ -62,48 +75,111 @@ static double forward_pass(double data[28][28])
 	l_c1.clear();
 	l_s1.clear();
 	l_f.clear();
-
+float milliseconds=0;
+	clock_t start_1, end_1;
 	clock_t start, end;
-	start = clock();
+	start_1 = clock();
+
 
 	l_input.setOutput((float *)input);
-	
-	fp_preact_c1<<<64, 64>>>((float (*)[28])l_input.output, (float (*)[24][24])l_c1.preact, (float (*)[5][5])l_c1.weight);
-	fp_bias_c1<<<64, 64>>>((float (*)[24][24])l_c1.preact, l_c1.bias);
-	apply_step_function<<<64, 64>>>(l_c1.preact, l_c1.output, l_c1.O);
+	KernelConfig configLayer1 = {dim3(6), dim3(24, 24)};
+  start = clock();
+  fp_c1<<<configLayer1.blocks, configLayer1.threads>>>((float (*)[28])l_input.output, (float (*)[24][24])l_c1.preact, (float (*)[5][5])l_c1.weight,l_c1.bias);
+   end = clock();
+    milliseconds = 1000.0 * (end - start) / CLOCKS_PER_SEC;
+    total_convolution_time += milliseconds;
 
-	fp_preact_s1<<<64, 64>>>((float (*)[24][24])l_c1.output, (float (*)[6][6])l_s1.preact, (float (*)[4][4])l_s1.weight);
-	fp_bias_s1<<<64, 64>>>((float (*)[6][6])l_s1.preact, l_s1.bias);
-	apply_step_function<<<64, 64>>>(l_s1.preact, l_s1.output, l_s1.O);
+  apply_step_function<<<configLayer1.blocks, configLayer1.threads>>>(l_c1.preact, l_c1.output, l_c1.O);
 
-	fp_preact_f<<<64, 64>>>((float (*)[6][6])l_s1.output, l_f.preact, (float (*)[6][6][6])l_f.weight);
-	fp_bias_f<<<64, 64>>>(l_f.preact, l_f.bias);
-	apply_step_function<<<64, 64>>>(l_f.preact, l_f.output, l_f.O);
-	
-	end = clock();
-	return ((double) (end - start)) / CLOCKS_PER_SEC;
+		  // Pooling layer
+
+		// Configuration for the subsampling layer
+KernelConfig configSubsample1 = {
+    dim3((6 + 2 - 1) / 2, (6 + 2 - 1) / 2, 6), // Grid size, rounding up if not a perfect multiple
+    dim3(2, 2, 1)  // Block size
+};
+	KernelConfig configBiasS1 = {
+    dim3(2, 2, 2), // Blocks
+    dim3(3, 3, 3)  // Threads per block
+};
+start = clock();
+	fp_s1<<<configSubsample1.blocks, configSubsample1.threads>>>((float (*)[24][24])l_c1.output, (float (*)[6][6])l_s1.preact, (float (*)[4][4])l_s1.weight,l_s1.bias);
+
+    end = clock();
+    milliseconds = 1000.0 * (end - start) / CLOCKS_PER_SEC;
+    total_pooling_time += milliseconds;
+
+  
+	apply_step_function<<<configSubsample1.blocks, configSubsample1.threads>>>(l_s1.preact, l_s1.output, l_s1.O);
+
+		 // Fully connected layer
+
+	  KernelConfig configFullyConnected = {dim3(10), dim3(256)};
+// Kernel launch
+	start = clock();
+fp_f<<<configFullyConnected.blocks, configFullyConnected.threads>>>((float (*)[6][6])l_s1.output, l_f.preact, (float (*)[6][6][6])l_f.weight,l_f.bias);
+   end = clock();
+    milliseconds = 1000.0 * (end - start) / CLOCKS_PER_SEC;
+    total_fully_connected_time += milliseconds;
+	apply_step_function<<<1, 10>>>(l_f.preact, l_f.output, l_f.O);
+
+
+    end_1 = clock();
+	return ((double) (end_1 - start_1)) / CLOCKS_PER_SEC;
+
 }
 
 // Back propagation to update weights
 static double back_pass()
 {
 	clock_t start, end;
-
+float milliseconds=0;
 	start = clock();
-
-	bp_weight_f<<<64, 64>>>((float (*)[6][6][6])l_f.d_weight, l_f.d_preact, (float (*)[6][6])l_s1.output);
-	bp_bias_f<<<64, 64>>>(l_f.bias, l_f.d_preact);
-
-	bp_output_s1<<<64, 64>>>((float (*)[6][6])l_s1.d_output, (float (*)[6][6][6])l_f.weight, l_f.d_preact);
-	bp_preact_s1<<<64, 64>>>((float (*)[6][6])l_s1.d_preact, (float (*)[6][6])l_s1.d_output, (float (*)[6][6])l_s1.preact);
-	bp_weight_s1<<<64, 64>>>((float (*)[4][4])l_s1.d_weight, (float (*)[6][6])l_s1.d_preact, (float (*)[24][24])l_c1.output);
-	bp_bias_s1<<<64, 64>>>(l_s1.bias, (float (*)[6][6])l_s1.d_preact);
-
-	bp_output_c1<<<64, 64>>>((float (*)[24][24])l_c1.d_output, (float (*)[4][4])l_s1.weight, (float (*)[6][6])l_s1.d_preact);
-	bp_preact_c1<<<64, 64>>>((float (*)[24][24])l_c1.d_preact, (float (*)[24][24])l_c1.d_output, (float (*)[24][24])l_c1.preact);
-	bp_weight_c1<<<64, 64>>>((float (*)[5][5])l_c1.d_weight, (float (*)[24][24])l_c1.d_preact, (float (*)[28])l_input.output);
-	bp_bias_c1<<<64, 64>>>(l_c1.bias, (float (*)[24][24])l_c1.d_preact);
-
+int blockSize = 256;  // Optimal block size
+int numOutputs = 10;
+int gridSize = (numOutputs + blockSize - 1) / blockSize;
+	start = clock();
+bp_f<<<gridSize, blockSize>>>((float (*)[6][6][6])l_f.d_weight,l_f.bias, l_f.d_preact, (float (*)[6][6])l_s1.output);
+   end = clock();
+    milliseconds = 1000.0 * (end - start) / CLOCKS_PER_SEC;
+    total_fully_connected_time += milliseconds;
+start = clock();
+  bp_output_s1<<<5,(216 + 5 - 1) / 5>>>((float (*)[6][6])l_s1.d_output, (float (*)[6][6][6])l_f.weight, l_f.d_preact);
+	dim3 threadsPerBlock_s1(6, 6, 6); // One thread for each element in the 6x6x6 block
+dim3 numBlocks_s1(1, 1, 1);
+	bp_preact_s1<<<numBlocks_s1, threadsPerBlock_s1>>>((float (*)[6][6])l_s1.d_preact, (float (*)[6][6])l_s1.d_output, (float (*)[6][6])l_s1.preact);
+	dim3 threadsPerBlock_w_s1(4, 4); // Perfect fit for 4x4 kernel weight dimensions
+dim3 numBlocks_w_s1(1, 1);
+	bp_weight_s1<<<numBlocks_w_s1, threadsPerBlock_w_s1>>>((float (*)[4][4])l_s1.d_weight, (float (*)[6][6])l_s1.d_preact, (float (*)[24][24])l_c1.output);
+	int totalThreads=6*6*6;
+	int numBlocks = (totalThreads + 256 - 1);
+	bp_bias_s1<<<numBlocks, 256>>>(l_s1.bias, (float (*)[6][6])l_s1.d_preact);
+     end = clock();
+    milliseconds = 1000.0 * (end - start) / CLOCKS_PER_SEC;
+    total_pooling_time += milliseconds;
+dim3 threadsPerBlock_output_c1(8,8 );  // 4x4 threads to handle the 4x4 weight matrix
+dim3 numBlocks_output_c1((24 + threadsPerBlock_output_c1.x - 1) / threadsPerBlock_output_c1.x,
+               (24 + threadsPerBlock_output_c1.y - 1) / threadsPerBlock_output_c1.y,
+               6);
+						start = clock();	 
+	bp_output_c1<<<numBlocks_output_c1, threadsPerBlock_output_c1>>>((float (*)[24][24])l_c1.d_output, (float (*)[4][4])l_s1.weight, (float (*)[6][6])l_s1.d_preact);
+	
+	dim3 threadsPerBlock_bp_preact_c1(8, 8); // This can be tuned based on the device capabilities
+dim3 numBlocks_bp_preact_c1(
+    (24 + threadsPerBlock_bp_preact_c1.x - 1) / threadsPerBlock_bp_preact_c1.x,
+    (24 + threadsPerBlock_bp_preact_c1.y - 1) / threadsPerBlock_bp_preact_c1.y,
+    6
+);
+  bp_preact_c1<<<numBlocks_bp_preact_c1, threadsPerBlock_bp_preact_c1>>>((float (*)[24][24])l_c1.d_preact, (float (*)[24][24])l_c1.d_output, (float (*)[24][24])l_c1.preact);
+	dim3 threadsPerBlock_weight_c1(5, 5); // Assuming the kernel size is small enough to fit a block
+dim3 numBlocks_weight_c1(1, 1, 6); 
+	bp_weight_c1<<<numBlocks_weight_c1, threadsPerBlock_weight_c1>>>((float (*)[5][5])l_c1.d_weight, (float (*)[24][24])l_c1.d_preact, (float (*)[28])l_input.output);
+	dim3 blocks_bias_c1(6); // One block per feature map
+dim3 threads_bias_c1(16, 16);
+	bp_bias_c1<<<blocks_bias_c1, threads_bias_c1>>>(l_c1.bias, (float (*)[24][24])l_c1.d_preact);
+end = clock();
+    milliseconds = 1000.0 * (end - start) / CLOCKS_PER_SEC;
+    total_convolution_time += milliseconds;
 
 	apply_grad<<<64, 64>>>(l_f.weight, l_f.d_weight, l_f.M * l_f.N);
 	apply_grad<<<64, 64>>>(l_s1.weight, l_s1.d_weight, l_s1.M * l_s1.N);
@@ -135,7 +211,7 @@ static void learn()
 	cublasCreate(&blas);
 
 	float err;
-	int iter = 50;
+	int iter = 1;
 	
 	double time_taken = 0.0;
 

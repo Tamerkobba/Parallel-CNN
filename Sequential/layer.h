@@ -1,6 +1,9 @@
 #include <cstdlib>
 #include <vector>
 #include <memory>
+#include <cmath>
+#include <cstdlib>
+#include <cstring>
 
 #ifndef LAYER_H
 #define LAYER_H
@@ -31,9 +34,6 @@ class Layer {
 	void clear();
 	void bp_clear();
 };
-#include <cmath>
-#include <cstdlib>
-#include <cstring>
 
 // Constructor
 Layer::Layer(int M, int N, int O) : M(M), N(N), O(O) {
@@ -100,14 +100,17 @@ void apply_grad(float *output, float *grad, int N) {
     }
 }
 
-void fp_preact_c1(const float input[28][28], float preact[6][24][24], const float weight[6][5][5]) {
+void fp_c1(const float input[28][28], float preact[6][24][24], const float weight[6][5][5], const float bias[6]) {
+    // Initialize preact with zeros
     for (int i = 0; i < 6; ++i) {
         for (int j = 0; j < 24; ++j) {
             for (int k = 0; k < 24; ++k) {
                 preact[i][j][k] = 0;
             }
         }
-    } 
+    }
+
+    // Compute preact values
     for (int m = 0; m < 6; ++m) {
         for (int x = 0; x < 24; ++x) {
             for (int y = 0; y < 24; ++y) {
@@ -121,57 +124,51 @@ void fp_preact_c1(const float input[28][28], float preact[6][24][24], const floa
             }
         }
     }
-}
 
-
-
-void fp_bias_c1(float preact[6][24][24], const float bias[6]) {
-    // Iterate over each feature map
-    
-    for (int i = 0; i < 6; ++i) { // There are 6 feature maps
-        // Iterate over each element in the feature map
-        for (int x = 0; x < 24; ++x) { // Each feature map is 24x24
+    // Add bias to preact
+    for (int i = 0; i < 6; ++i) {
+        for (int x = 0; x < 24; ++x) {
             for (int y = 0; y < 24; ++y) {
-                // Add the corresponding bias to each element
                 preact[i][x][y] += bias[i];
             }
         }
     }
 }
 
-void fp_preact_s1(const float input[6][24][24], float preact[6][6][6], const float weight[1][4][4]) {
+void fp_s1(const float input[6][24][24], float preact[6][6][6], const float weight[1][4][4], const float bias[1]) {
     // Initialize preact to zero before accumulation
-    
-    for (int m = 0; m < 6; ++m)
-        for (int x = 0; x < 6; ++x)
-            for (int y = 0; y < 6; ++y)
+    for (int m = 0; m < 6; ++m) {
+        for (int x = 0; x < 6; ++x) {
+            for (int y = 0; y < 6; ++y) {
                 preact[m][x][y] = 0;
+            }
+        }
+    }
 
     // Nested loops to simulate the behavior of the CUDA kernel
-    
-    for (int m = 0; m < 6; ++m) {          // for each output feature map
-        for (int x = 0; x < 6; ++x) {      // output dimensions are reduced by factor of 4
+    for (int m = 0; m < 6; ++m) {
+        // for each output feature map
+        for (int x = 0; x < 6; ++x) {
+            // output dimensions are reduced by factor of 4
             for (int y = 0; y < 6; ++y) {
                 float sum = 0.0f;
-                for (int i = 0; i < 4; ++i) {  // kernel width
-                    for (int j = 0; j < 4; ++j) {  // kernel height
+                for (int i = 0; i < 4; ++i) {
+                    // kernel width
+                    for (int j = 0; j < 4; ++j) {
+                        // kernel height
                         // Applying weights on input and summing up to form the pooled output
                         sum += weight[0][i][j] * input[m][x * 4 + i][y * 4 + j];
                     }
                 }
-                
                 preact[m][x][y] += sum; // Pooling operation with weighted sum
             }
         }
     }
-}
 
-void fp_bias_s1(float preact[6][6][6], const float bias[1]) {
-    // Iterate through each element of the 3D array and add the bias
-    
-    for (int i = 0; i < 6; ++i) {     // first dimension
-        for (int j = 0; j < 6; ++j) { // second dimension
-            for (int k = 0; k < 6; ++k) { // third dimension
+    // Add bias to preact
+    for (int i = 0; i < 6; ++i) {
+        for (int j = 0; j < 6; ++j) {
+            for (int k = 0; k < 6; ++k) {
                 preact[i][j][k] += bias[0];
             }
         }

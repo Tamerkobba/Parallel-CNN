@@ -1,4 +1,4 @@
-#include "layer.h"
+#include "layer_c.h"
 
 // Constructor
 Layer::Layer(int M, int N, int O)
@@ -37,6 +37,7 @@ Layer::Layer(int M, int N, int O)
 	cudaMalloc(&d_weight, sizeof(float) * M * N);
 
 	cudaMemcpy(bias, h_bias, sizeof(float) * N, cudaMemcpyHostToDevice);
+cudaMemcpyToSymbol(c_dt, &dt, sizeof(float), 0, cudaMemcpyHostToDevice);
 
 	cudaMemcpy(weight, h_weight, sizeof(float) * M * N, cudaMemcpyHostToDevice);
 }
@@ -82,13 +83,15 @@ __device__ float step_function(float v)
 	return 1 / (1 + exp(-v));
 }
 
-__global__ void apply_step_function(float *input, float *output, int N) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < N) {
-        output[i] = step_function(input[i]);
-    }
-}
+__global__ void apply_step_function(float *input, float *output, const int N)
+{
+	const int pos = blockIdx.x * blockDim.x + threadIdx.x;
+	const int size = blockDim.x * gridDim.x;
 
+	for (int idx = N * pos / size; idx < N * (pos+1) / size; ++idx) {
+		output[idx] = step_function(input[idx]);
+	}
+}
 
 __global__ void makeError(float *err, float *output, unsigned int Y, const int N)
 {
@@ -109,307 +112,264 @@ __global__ void apply_grad(float *output, float *grad, const int N)
 		output[idx] += dt * grad[idx];
 	}
 }
+__global__ void fp_c1(float input[28][28], float preact[6][24][24], float weight[6][5][5], float bias[6]) {
+    int m = blockIdx.x; // One block per output feature map
+    int x = threadIdx.x; // Thread along x dimension of output feature map
+    int y = threadIdx.y; // Thread along y dimension of output feature map
 
-
-__global__ void fp_preact_c1( float input[28][28], float preact[6][24][24], float weight[6][5][5]) {
-    __shared__ float input_tile[TILE_WIDTH + FILTER_SIZE - 1][TILE_WIDTH + FILTER_SIZE - 1];
-
-    int tx = threadIdx.x;
-    int ty = threadIdx.y;
-
-    int row_o = blockIdx.y * TILE_WIDTH + ty; // Output row index
-    int col_o = blockIdx.x * TILE_WIDTH + tx; // Output col index
-
-    int row_i = row_o - FILTER_RADIUS; // Input row index
-    int col_i = col_o - FILTER_RADIUS; // Input col index
-
-    // Load tile into shared memory
-    for (int m = blockIdx.z; m < 6; m += gridDim.z) {  // Handle more than one filter per block, if necessary
-        if (row_i >= 0 && row_i < 28 && col_i >= 0 && col_i < 28) {
-            input_tile[ty][tx] = input[row_i][col_i];
-        } else {
-            input_tile[ty][tx] = 0.0f;
+    if (m < 6 && x < 24 && y < 24) {
+        float sum = 0.0f;
+        for (int i = 0; i < 5; ++i) {
+            for (int j = 0; j < 5; ++j) {
+                sum += input[x + i][y + j] * weight[m][i][j];
+            }
         }
+        preact[m][x][y] = sum + bias[m];
+    }
+}
 
-        __syncthreads();  // Wait for all threads to load the tile elements
 
-        // Convolution computation for the tile
-        if (ty < TILE_WIDTH && tx < TILE_WIDTH && row_o < 24 && col_o < 24) {
-            float sum = 0.0f;
-            for (int i = 0; i < FILTER_SIZE; ++i) {
-                for (int j = 0; j < FILTER_SIZE; ++j) {
-                    sum += input_tile[ty + i][tx + j] * weight[m][i][j];
+__global__ void fp_s1(float input[6][24][24], float preact[6][6][6], float weight[1][4][4], float bias[1]) {
+    int m = blockIdx.z;  // Use z-dimension in grid to handle different feature maps
+    int x = blockIdx.x * blockDim.x + threadIdx.x;  // Calculate global x index
+    int y = blockIdx.y * blockDim.y + threadIdx.y;  // Calculate global y index
+
+    if (m < 6 && x < 6 && y < 6) {
+        float sum = 0.0f;
+        for (int i = 0; i < 4; ++i) {  // kernel width
+            for (int j = 0; j < 4; ++j) {  // kernel height
+                // Apply weights on input and summing up to form the pooled output
+                sum += weight[0][i][j] * input[m][x * 4 + i][y * 4 + j];
+            }
+        }
+        // Add bias and store the result in the corresponding location in preact
+        preact[m][x][y] = sum + bias[0];
+    }
+}
+
+__global__ void fp_f(float input[6][6][6], float preact[10], float weight[10][6][6][6], float bias[10]) {
+    int o = blockIdx.x * blockDim.x + threadIdx.x; // Index for the output dimension
+    if (o < 10) {
+        float sum = 0.0f;
+        for (int j = 0; j < 6; ++j) { // First dimension of input
+            for (int k = 0; k < 6; ++k) { // Second dimension of input
+                for (int l = 0; l < 6; ++l) { // Third dimension of input
+                    sum += weight[o][j][k][l] * input[j][k][l];
                 }
             }
-            preact[m][row_o][col_o] = sum;
         }
-        __syncthreads();  // Wait for all threads to compute the convolution before starting next iteration
+        atomicAdd(&preact[o], sum); // Atomically add the sum to the output to avoid write conflicts
+        preact[o] += bias[o]; // Add bias to each element
     }
 }
 
-__global__ void fp_bias_c1(float *preact,  float *bias, int width, int height) {
-    int i = blockIdx.z;
-    int x = blockIdx.x * blockDim.x + threadIdx.x;
-    int y = blockIdx.y * blockDim.y + threadIdx.y;
+__global__ void bp_f(float d_weight[10][6][6][6], float bias[10], float d_preact[10], float p_output[6][6][6]) {
+    __shared__ float shared_d_weight[10][6][6][6];
+    __shared__ float shared_p_output[6][6][6];
 
-    if (x < width && y < height) {
-        int index = (i * width * height) + (x * height) + y;
-        preact[index] += bias[i];
-    }
-}
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
 
-__global__ void fp_preact_s1(float input[6][24][24], float preact[6][6][6], float weight[1][4][4])
-{
-	const int pos = blockIdx.x * blockDim.x + threadIdx.x;
-	const int size = blockDim.x * gridDim.x;
-
-	const int N = 4*4*6*6*6;
-
-	for (int n = N * pos / size; n < N * (pos+1) / size; ++n) {
-		int idx = n;
-		const int i1 = ((idx /= 1	) % 4);
-		const int i2 = ((idx /= 4	) % 4);
-		const int i3 = ((idx /= 4	) % 6);
-		const int i4 = ((idx /= 6	) % 6);
-		const int i5 = ((idx /= 6	) % 6);
-
-		atomicAdd(&preact[i3][i4][i5], weight[0][i1][i2] * input[i3][i4 * 4 + i1][i5 * 4 + i2]);
-	}
-}
-
-__global__ void fp_bias_s1(float preact[6][6][6], float bias[1])
-{
-	const int pos = blockIdx.x * blockDim.x + threadIdx.x;
-	const int size = blockDim.x * gridDim.x;
-
-	const int N = 6*6*6;
-
-	for (int n = N * pos / size; n < N * (pos+1) / size; ++n) {
-		int idx = n;
-		const int i1 = ((idx /= 1	) % 6);
-		const int i2 = ((idx /= 6	) % 6);
-		const int i3 = ((idx /= 6	) % 6);
-
-		preact[i1][i2][i3] += bias[0];
-	}
-}
-
-__global__ void fp_preact_f(float input[6][6][6], float preact[10], float weight[10][6][6][6])
-{
-	const int pos = blockIdx.x * blockDim.x + threadIdx.x;
-	const int size = blockDim.x * gridDim.x;
-
-	const int N = 10*6*6*6;
-
-	for (int n = N * pos / size; n < N * (pos+1) / size; ++n) {
-		int idx = n;
-		const int i1 = ((idx /= 1	) % 10);
-		const int i2 = ((idx /= 10	) % 6);
-		const int i3 = ((idx /= 6	) % 6);
-		const int i4 = ((idx /= 6	) % 6);
-
-		atomicAdd(&preact[i1], weight[i1][i2][i3][i4] * input[i2][i3][i4]);
-	}
-}
-
-__global__ void fp_bias_f(float preact[10], float bias[10])
-{
-	const int pos = blockIdx.x * blockDim.x + threadIdx.x;
-	const int size = blockDim.x * gridDim.x;
-
-	const int N = 10;
-
-	for (int idx = N * pos / size; idx < N * (pos+1) / size; ++idx) {
-		preact[idx] += bias[idx];
-	}
-}
-
-__global__ void bp_weight_f(float d_weight[10][6][6][6], float d_preact[10], float p_output[6][6][6])
-{
-	const int pos = blockIdx.x * blockDim.x + threadIdx.x;
-	const int size = blockDim.x * gridDim.x;
-
-	const int N = 10*6*6*6;
-
-	for (int n = N * pos / size; n < N * (pos+1) / size; ++n) {
-		int idx = n;
-		const int i1 = ((idx /= 1	) % 10);
-		const int i2 = ((idx /= 10	) % 6);
-		const int i3 = ((idx /= 6	) % 6);
-		const int i4 = ((idx /= 6	) % 6);
-
-		d_weight[i1][i2][i3][i4] = d_preact[i1] * p_output[i2][i3][i4];
-	}
-}
-
-__global__ void bp_bias_f(float bias[10], float d_preact[10])
-{
-	const int pos = blockIdx.x * blockDim.x + threadIdx.x;
-	const int size = blockDim.x * gridDim.x;
-
-	const int N = 10;
-
-	for (int idx = N * pos / size; idx < N * (pos+1) / size; ++idx) {
-		bias[idx] += dt * d_preact[idx];
-	}
-}
-
-__global__ void bp_output_s1(float d_output[6][6][6], float n_weight[10][6][6][6], float nd_preact[10])
-{
-	const int pos = blockIdx.x * blockDim.x + threadIdx.x;
-	const int size = blockDim.x * gridDim.x;
-
-	const int N = 10*6*6*6;
-
-	for (int n = N * pos / size; n < N * (pos+1) / size; ++n) {
-		int idx = n;
-		const int i1 = ((idx /= 1	) % 10);
-		const int i2 = ((idx /= 10	) % 6);
-		const int i3 = ((idx /= 6	) % 6);
-		const int i4 = ((idx /= 6	) % 6);
-
-		atomicAdd(&d_output[i2][i3][i4], n_weight[i1][i2][i3][i4] * nd_preact[i1]);
-	}
-}
-
-__global__ void bp_preact_s1(float d_preact[6][6][6], float d_output[6][6][6], float preact[6][6][6])
-{
-	const int pos = blockIdx.x * blockDim.x + threadIdx.x;
-	const int size = blockDim.x * gridDim.x;
-
-	const int N = 6*6*6;
-
-	for (int n = N * pos / size; n < N * (pos+1) / size; ++n) {
-		int idx = n;
-		const int i1 = ((idx /= 1	) % 6);
-		const int i2 = ((idx /= 6	) % 6);
-		const int i3 = ((idx /= 6	) % 6);
-
-		const float o = step_function(preact[i1][i2][i3]);
-
-		d_preact[i1][i2][i3] = d_output[i1][i2][i3] * o * (1 - o);
-	}
-}
-
-__global__ void bp_weight_s1(float d_weight[1][4][4], float d_preact[6][6][6], float p_output[6][24][24])
-{
-	const int pos = blockIdx.x * blockDim.x + threadIdx.x;
-	const int size = blockDim.x * gridDim.x;
-
-	const int N = 1*4*4*6*6*6;
-	const float d = pow(6.0f, 3.0f);
-
-	for (int n = N * pos / size; n < N * (pos+1) / size; ++n) {
-		int idx = n;
-		const int i1 = ((idx /= 1	) % 1);
-		const int i2 = ((idx /= 1	) % 4);
-		const int i3 = ((idx /= 4	) % 4);
-		const int i4 = ((idx /= 4	) % 6);
-		const int i5 = ((idx /= 6	) % 6);
-		const int i6 = ((idx /= 6	) % 6);
-
-		atomicAdd(&d_weight[i1][i2][i3], d_preact[i4][i5][i6] * p_output[i4][i5 * 4 + i2][i6 * 4 + i3]);
-	}
-}
-
-__global__ void bp_bias_s1(float bias[1], float d_preact[6][6][6])
-{
-	const int pos = blockIdx.x * blockDim.x + threadIdx.x;
-	const int size = blockDim.x * gridDim.x;
-
-	const int N = 6*6*6;
-	const float d = pow(6.0f, 3.0f);
-
-	for (int n = N * pos / size; n < N * (pos+1) / size; ++n) {
-		int idx = n;
-		const int i1 = ((idx /= 1	) % 6);
-		const int i2 = ((idx /= 6	) % 6);
-		const int i3 = ((idx /= 6	) % 6);
-
-		atomicAdd(&bias[0], dt * d_preact[i1][i2][i3] / d);
-	}
-}
-
-__global__ void bp_output_c1(float d_output[6][24][24], float n_weight[1][4][4], float nd_preact[6][6][6]) {
-    int i4 = blockIdx.z;  // Index for the output depth dimension
-    int i5 = blockIdx.y;  // Index for the output height dimension
-    int i6 = blockIdx.x;  // Index for the output width dimension
-
-    int i2 = threadIdx.y; // Index within the weight height dimension
-    int i3 = threadIdx.x; // Index within the weight width dimension
-
-    // Each thread computes one element of the d_output tenso
-    int x = i5 * 4 + i2;
-    int y = i6 * 4 + i3;
-
-    if (i2 < 4 && i3 < 4 && i4 < 6 && x < 24 && y < 24) {
-        atomicAdd(&d_output[i4][x][y], n_weight[0][i2][i3] * nd_preact[i4][i5][i6]);
-    }
-}
-
-__global__ void bp_preact_c1(
-    float d_preact[6][24][24],
-  float d_output[6][24][24],
-   float preact[6][24][24]
-) {
-    int i = blockIdx.z; // Index for the depth dimension
-    int j = blockIdx.y * blockDim.y + threadIdx.y; // Index for the height dimension
-    int k = blockIdx.x * blockDim.x + threadIdx.x; // Index for the width dimension
-
-    if (i < 6 && j < 24 && k < 24) {
-        d_preact[i][j][k] = d_output[i][j][k] * activation_derivative(preact[i][j][k]);
-    }
-}
-__global__ void bp_weight_c1(
-    float d_weight[6][5][5],
-    const float d_preact[6][24][24],
-    const float p_output[28][28]
-) {
-    int i1 = blockIdx.z;  // Filter index
-    int i2 = blockIdx.y;  // Kernel row index
-    int i3 = blockIdx.x;  // Kernel column index
-
-    float update = 0.0f;
-    float d = 24.0f * 24.0f;  
-
-    if (i1 < 6 && i2 < 5 && i3 < 5) {
-        // Accumulate updates in a local variable to reduce the number of atomicAdds
-        for (int i4 = 0; i4 < 24; ++i4) {
-            for (int i5 = 0; i5 < 24; ++i5) {
-                update += d_preact[i1][i4][i5] * p_output[i4 + i2][i5 + i3] / d;
+    if (i < 10) {
+        // Load d_weight and p_output into shared memory
+        for (int j = 0; j < 6; ++j) {
+            for (int k = 0; k < 6; ++k) {
+                for (int l = 0; l < 6; ++l) {
+                    shared_d_weight[i][j][k][l] = d_weight[i][j][k][l];
+                    shared_p_output[j][k][l] = p_output[j][k][l];
+                }
             }
         }
-        // Atomic add to update the weight
-        atomicAdd(&d_weight[i1][i2][i3], update);
+        __syncthreads(); // Ensure all threads have loaded the data before proceeding
+
+        // Update weights using shared memory
+        for (int j = 0; j < 6; ++j) {
+            for (int k = 0; k < 6; ++k) {
+                for (int l = 0; l < 6; ++l) {
+                    d_weight[i][j][k][l] = d_preact[i] * shared_p_output[j][k][l];
+                }
+            }
+        }
+        // Update bias
+        bias[i] += c_dt* d_preact[i];
+    }
+}
+
+
+// Kernel launch parameters should be set according to the device's capabilities and the problem's needs
+__global__ void bp_output_s1(float d_output[6][6][6], float n_weight[10][6][6][6], float nd_preact[10]) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x; // Calculate global index
+
+    // Calculate indices for d_output
+    int i2 = idx / 36; // First dimension index of d_output
+    int i3 = (idx % 36) / 6; // Second dimension index of d_output
+    int i4 = idx % 6; // Third dimension index of d_output
+
+    if (i2 < 6 && i3 < 6 && i4 < 6) {
+        float accumulation = 0.0f;
+
+        // Accumulate contributions from each output neuron's weight and pre-activation gradient
+        for (int i1 = 0; i1 < 10; ++i1) {
+            accumulation += n_weight[i1][i2][i3][i4] * nd_preact[i1];
+        }
+
+        d_output[i2][i3][i4] = accumulation; // Store accumulated value
+    }
+}
+
+__global__ void bp_preact_s1(float d_preact[6][6][6], float d_output[6][6][6], float preact[6][6][6]) {
+    // Calculate the global index, assuming a 3D block and grid configuration
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int j = blockIdx.y * blockDim.y + threadIdx.y;
+    int k = blockIdx.z * blockDim.z + threadIdx.z;
+
+    // Check if the thread is within bounds of the 6x6x6 array
+    if (i < 6 && j < 6 && k < 6) {
+        float o = step_function(preact[i][j][k]); // Assuming sigmoid is defined
+        d_preact[i][j][k] = d_output[i][j][k] * o * (1 - o);
+    }
+}
+__global__ void bp_weight_s1(float d_weight[1][4][4], float d_preact[6][6][6],float p_output[6][24][24]) {
+    // Indices for the kernel weight to update
+    int j = blockIdx.x * blockDim.x + threadIdx.x; // kernel width index
+    int k = blockIdx.y * blockDim.y + threadIdx.y; // kernel height index
+
+    if (j < 4 && k < 4) { // Ensure within bounds of the weight dimensions
+        float accum = 0.0f;
+
+        // Accumulate gradient contributions across all preact and corresponding output values
+        for (int i4 = 0; i4 < 6; ++i4) { // over each output feature map dimension
+            for (int i5 = 0; i5 < 6; ++i5) { // first dimension of output
+                for (int i6 = 0; i6 < 6; ++i6) { // second dimension of output
+                    accum += d_preact[i4][i5][i6] * p_output[i4][i5 * 4 + j][i6 * 4 + k];
+                }
+            }
+        }
+
+        d_weight[0][j][k] = accum; // Single weight map
+    }
+}
+
+
+__global__ void bp_bias_s1(float bias[1], float d_preact[6][6][6]) {
+    // Define shared memory for reduction
+    __shared__ float sharedSum[6 * 6 * 6];  // Allocate enough space for each thread in the block to hold one element
+
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;  // Global index
+
+    if (idx < 6 * 6 * 6) {  // Check if within bounds
+        int i = idx / 36;          // First dimension index
+        int j = (idx % 36) / 6;    // Second dimension index
+        int k = idx % 6;           // Third dimension index
+
+        // Copy data to shared memory
+        sharedSum[threadIdx.x] = d_preact[i][j][k];
+    } else {
+        sharedSum[threadIdx.x] = 0.0f;
+    }
+
+    __syncthreads();  // Synchronize threads to ensure all loads are complete
+
+    // Perform reduction in shared memory
+    for (unsigned int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) {
+            sharedSum[threadIdx.x] += sharedSum[threadIdx.x + s];
+        }
+        __syncthreads();  // Ensure all additions are done before next step
+    }
+
+    // Update the bias in global memory from the thread 0 of each block
+    if (threadIdx.x == 0) {
+        atomicAdd(&bias[0], c_dt * sharedSum[0] / (6 * 6 * 6));
+    }
+}
+
+
+__global__ void bp_output_c1(float d_output[6][24][24], float n_weight[1][4][4], float nd_preact[6][6][6]) {
+    int c = blockIdx.z;  // Channel
+    int x = blockIdx.y * blockDim.y + threadIdx.y;  // Spatial y-coordinate
+    int y = blockIdx.x * blockDim.x + threadIdx.x;  // Spatial x-coordinate
+
+    if (x < 24 && y < 24 && c < 6) {
+        float sum = 0.0f;
+
+        // Determine which section of the nd_preact and n_weight affects this particular output
+        // Reverse calculate the indices in nd_preact that affect this output
+        for (int i2 = 0; i2 < 4; ++i2) {  // Kernel width
+            for (int i3 = 0; i3 < 4; ++i3) {  // Kernel height
+                int preact_x = (x - i2) / 4;
+                int preact_y = (y - i3) / 4;
+
+                // Check bounds and make sure we're considering valid mappings
+                if (preact_x >= 0 && preact_x < 6 && preact_y >= 0 && preact_y < 6) {
+                    sum += n_weight[0][i2][i3] * nd_preact[c][preact_x][preact_y];
+                }
+            }
+        }
+
+        // Only update the output if it's within bounds (this check might be redundant due to the initial condition)
+        d_output[c][x][y] = sum;
+    }
+}
+
+__global__ void bp_preact_c1(float d_preact[6][24][24],  float d_output[6][24][24], float preact[6][24][24]) {
+    int i = blockIdx.z;  // Feature map index
+    int j = blockIdx.y * blockDim.y + threadIdx.y;  // Row index
+    int k = blockIdx.x * blockDim.x + threadIdx.x;  // Column index
+
+    if (i < 6 && j < 24 && k < 24) {
+        float s = 1.0f / (1.0f + expf(-preact[i][j][k]));  // Sigmoid function
+        float ds = s * (1.0f - s);  // Derivative of the sigmoid function
+        d_preact[i][j][k] = d_output[i][j][k] * ds;
+    }
+}
+
+
+__global__ void bp_weight_c1(float d_weight[6][5][5], float d_preact[6][24][24],  float p_output[28][28]) {
+    int filter = blockIdx.z; // Each block handles one filter
+    int i = blockIdx.x * blockDim.x + threadIdx.x; // Index for rows in weight tensor
+    int j = blockIdx.y * blockDim.y + threadIdx.y; // Index for columns in weight tensor
+
+    if (i < 5 && j < 5) {
+        float sum = 0.0;
+        for (int x = 0; x < 24; ++x) {
+            for (int y = 0; y < 24; ++y) {
+                sum += d_preact[filter][x][y] * p_output[x + i][y + j];
+            }
+        }
+        float d = 24.0f * 24.0f; // Normalization factor
+        d_weight[filter][i][j] = sum / d;
     }
 }
 
 __global__ void bp_bias_c1(float bias[6], float d_preact[6][24][24]) {
-    __shared__ float s_accumulators[6][blockDim.x]; // Shared memory to store partial sums
+    int feature = blockIdx.x; // Each block handles one feature map
+    int idx = threadIdx.y * blockDim.x + threadIdx.x; // Flattened index for threads in a block
 
-    int filter_index = blockIdx.x;
-    int tid = threadIdx.x;
+    __shared__ float partialSum[256]; // Shared memory for thread partial sums, assuming a block size of 256
 
-    // Compute partial sums within each block
-    float accumulator = 0.0f;
-    for (int i = 0; i < 24; ++i) {
-        for (int j = 0; j < 24; ++j) {
-            accumulator += d_preact[filter_index][i][j];
-        }
+    // Initialize shared memory
+    if (idx < 256) {
+        partialSum[idx] = 0;
     }
-    s_accumulators[filter_index][tid] = accumulator;
-
-    // Perform block-level reduction to compute total sum for each filter
     __syncthreads();
-    for (int stride = blockDim.x / 2; stride > 0; stride >>= 1) {
-        if (tid < stride) {
-            s_accumulators[filter_index][tid] += s_accumulators[filter_index][tid + stride];
-        }
-        __syncthreads();
-    }
 
-    // Write the block-level sum to global memory
-    if (tid == 0) {
-        atomicAdd(&bias[filter_index], LEARNING_RATE * s_accumulators[filter_index][0] / (24.0 * 24.0));
+    // Each thread computes a partial sum
+    int stride = blockDim.x * blockDim.y;
+    int start = idx;
+    for (int i = start; i < 24 * 24; i += stride) {
+        int row = i / 24;
+        int col = i % 24;
+        atomicAdd(&partialSum[idx], d_preact[feature][row][col]);
+    }
+    __syncthreads();
+
+    // Reduce partial sums to a single sum per block
+    if (idx == 0) {
+        float sum = 0.0f;
+        for (int i = 0; i < blockDim.x * blockDim.y; i++) {
+            sum += partialSum[i];
+        }
+        float d = 24.0f * 24.0f;  // Normalization factor
+        atomicAdd(&bias[feature], c_dt* sum / d);
     }
 }
