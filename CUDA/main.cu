@@ -89,7 +89,7 @@ float milliseconds=0;
     milliseconds = 1000.0 * (end - start) / CLOCKS_PER_SEC;
     total_convolution_time += milliseconds;
 
-  apply_step_function<<<configLayer1.blocks, configLayer1.threads>>>(l_c1.preact, l_c1.output, l_c1.O);
+  apply_step_function(l_c1.preact, l_c1.output, l_c1.O);
 
 		  // Pooling layer
 
@@ -121,7 +121,7 @@ fp_f<<<configFullyConnected.blocks, configFullyConnected.threads>>>((float (*)[6
    end = clock();
     milliseconds = 1000.0 * (end - start) / CLOCKS_PER_SEC;
     total_fully_connected_time += milliseconds;
-	apply_step_function>(l_f.preact, l_f.output, l_f.O);
+	apply_step_function(l_f.preact, l_f.output, l_f.O);
 
 
     end_1 = clock();
