@@ -37,7 +37,7 @@ Layer::Layer(int M, int N, int O)
 	cudaMalloc(&d_weight, sizeof(float) * M * N);
 
 	cudaMemcpy(bias, h_bias, sizeof(float) * N, cudaMemcpyHostToDevice);
-cudaMemcpyToSymbol(c_dt, &dt, sizeof(float), 0, cudaMemcpyHostToDevice);
+    cudaMemcpyToSymbol(c_dt, &dt, sizeof(float), 0, cudaMemcpyHostToDevice);
 
 	cudaMemcpy(weight, h_weight, sizeof(float) * M * N, cudaMemcpyHostToDevice);
 }
@@ -92,26 +92,6 @@ __global__ void apply_step_function(float *input, float *output, const int N)
 		output[idx] = step_function(input[idx]);
 	}
 }
-
-__global__ void makeError(float *err, float *output, unsigned int Y, const int N)
-{
-	const int pos = blockIdx.x * blockDim.x + threadIdx.x;
-	const int size = blockDim.x * gridDim.x;
-
-	for (int idx = N * pos / size; idx < N * (pos+1) / size; ++idx) {
-		err[idx] = ((Y == idx ? 1.0f : 0.0f) - output[idx]);
-	}
-}
-
-__global__ void apply_grad(float *output, float *grad, const int N)
-{
-	const int pos = blockIdx.x * blockDim.x + threadIdx.x;
-	const int size = blockDim.x * gridDim.x;
-
-	for (int idx = N * pos / size; idx < N * (pos+1) / size; ++idx) {
-		output[idx] += dt * grad[idx];
-	}
-}
 __global__ void fp_c1(float input[28][28], float preact[6][24][24], float weight[6][5][5], float bias[6]) {
     int m = blockIdx.x; // One block per output feature map
     int x = threadIdx.x; // Thread along x dimension of output feature map
@@ -138,7 +118,7 @@ __global__ void fp_s1(float input[6][24][24], float preact[6][6][6], float weigh
         float sum = 0.0f;
         for (int i = 0; i < 4; ++i) {  // kernel width
             for (int j = 0; j < 4; ++j) {  // kernel height
-                // Apply weights on input and summing up to form the pooled output
+               
                 sum += weight[0][i][j] * input[m][x * 4 + i][y * 4 + j];
             }
         }

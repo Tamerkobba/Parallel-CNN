@@ -40,9 +40,28 @@ class Layer {
 // Utility CUDA kernel functions
 __device__ float step_function(float v);
 __device__ float step_function_derivative(float x);
-__global__ void apply_step_function(float *input, float *output, const int N);
-__global__ void makeError(float *err, float *output, unsigned int Y, const int N);
-__global__ void apply_grad(float *output, float *grad, const int N);
+
+float step_function_seq(float v) {
+    return 1 / (1 + exp(-v));
+}
+
+void apply_step_function(float *input, float *output, int N) {
+    for (int i = 0; i < N; ++i) {
+        output[i] = step_function_seq(input[i]);
+    }
+}
+
+void makeError(float *err, float *output, unsigned int Y, int N) {
+    for (int i = 0; i < N; ++i) {
+        err[i] = (i == Y) ? 1.0f - output[i] : -output[i];
+    }
+}
+
+void apply_grad(float *output, float *grad, int N) {
+    for (int i = 0; i < N; ++i) {
+        output[i] += dt * grad[i];
+    }
+}
 
 // Forward propagation kernels
 __global__ void fp_c1(float input[28][28], float preact[6][24][24], float weight[6][5][5], float bias[6]);
