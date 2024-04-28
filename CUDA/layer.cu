@@ -83,24 +83,35 @@ __device__ float step_function(float v)
 	return 1 / (1 + exp(-v));
 }
 
-__host__ void apply_step_function(float *input, float *output, int N) {
-    for (int i = 0; i < N; ++i) {
-        output[i] = step_function(input[i]);
-    }
+__global__ void apply_step_function(float *input, float *output, const int N)
+{
+	const int pos = blockIdx.x * blockDim.x + threadIdx.x;
+	const int size = blockDim.x * gridDim.x;
+
+	for (int idx = N * pos / size; idx < N * (pos+1) / size; ++idx) {
+		output[idx] = step_function(input[idx]);
+	}
 }
 
-__host__ void makeError(float *err, float *output, unsigned int Y, int N) {
-    for (int i = 0; i < N; ++i) {
-        err[i] = (i == Y) ? 1.0f - output[i] : -output[i];
-    }
+__global__ void makeError(float *err, float *output, unsigned int Y, const int N)
+{
+	const int pos = blockIdx.x * blockDim.x + threadIdx.x;
+	const int size = blockDim.x * gridDim.x;
+
+	for (int idx = N * pos / size; idx < N * (pos+1) / size; ++idx) {
+		err[idx] = ((Y == idx ? 1.0f : 0.0f) - output[idx]);
+	}
 }
 
-__host__ void apply_grad(float *output, float *grad, int N) {
-    for (int i = 0; i < N; ++i) {
-        output[i] += dt * grad[i];
-    }
-}
+__global__ void apply_grad(float *output, float *grad, const int N)
+{
+	const int pos = blockIdx.x * blockDim.x + threadIdx.x;
+	const int size = blockDim.x * gridDim.x;
 
+	for (int idx = N * pos / size; idx < N * (pos+1) / size; ++idx) {
+		output[idx] += dt * grad[idx];
+	}
+}
 __global__ void fp_c1(float input[28][28], float preact[6][24][24], float weight[6][5][5], float bias[6]) {
     int m = blockIdx.x; // One block per output feature map
     int x = threadIdx.x; // Thread along x dimension of output feature map

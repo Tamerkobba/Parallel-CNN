@@ -89,7 +89,7 @@ float milliseconds=0;
     milliseconds = 1000.0 * (end - start) / CLOCKS_PER_SEC;
     total_convolution_time += milliseconds;
 
-  apply_step_function(l_c1.preact, l_c1.output, l_c1.O);
+  apply_step_function<<<configLayer1.blocks, configLayer1.threads>>>(l_c1.preact, l_c1.output, l_c1.O);
 
 		  // Pooling layer
 
@@ -110,7 +110,7 @@ start = clock();
     total_pooling_time += milliseconds;
 
   
-	apply_step_function(l_s1.preact, l_s1.output, l_s1.O);
+	apply_step_function<<<configSubsample1.blocks, configSubsample1.threads>>>(l_s1.preact, l_s1.output, l_s1.O);
 
 		 // Fully connected layer
 
@@ -121,7 +121,7 @@ fp_f<<<configFullyConnected.blocks, configFullyConnected.threads>>>((float (*)[6
    end = clock();
     milliseconds = 1000.0 * (end - start) / CLOCKS_PER_SEC;
     total_fully_connected_time += milliseconds;
-	apply_step_function(l_f.preact, l_f.output, l_f.O);
+	apply_step_function<<<1, 10>>>(l_f.preact, l_f.output, l_f.O);
 
 
     end_1 = clock();
@@ -181,9 +181,9 @@ end = clock();
     milliseconds = 1000.0 * (end - start) / CLOCKS_PER_SEC;
     total_convolution_time += milliseconds;
 
-	apply_grad(l_f.weight, l_f.d_weight, l_f.M * l_f.N);
-	apply_grad(l_s1.weight, l_s1.d_weight, l_s1.M * l_s1.N);
-	apply_grad(l_c1.weight, l_c1.d_weight, l_c1.M * l_c1.N);
+	apply_grad<<<64, 64>>>(l_f.weight, l_f.d_weight, l_f.M * l_f.N);
+	apply_grad<<<64, 64>>>(l_s1.weight, l_s1.d_weight, l_s1.M * l_s1.N);
+	apply_grad<<<64, 64>>>(l_c1.weight, l_c1.d_weight, l_c1.M * l_c1.N);
 
 	end = clock();
 	return ((double) (end - start)) / CLOCKS_PER_SEC;
@@ -230,7 +230,7 @@ static void learn()
 			l_c1.bp_clear();
 
 			// Euclid distance of train_set[i]
-			makeError(l_f.d_preact, l_f.output, train_set[i].label, 10);
+			makeError<<<10, 1>>>(l_f.d_preact, l_f.output, train_set[i].label, 10);
 			cublasSnrm2(blas, 10, l_f.d_preact, 1, &tmp_err);
 			err += tmp_err;
 
