@@ -80,18 +80,20 @@ void Layer::bp_clear()
 
 __device__ float step_function(float v)
 {
-	return 1 / (1 + exp(-v));
+    return 1 / (1 + expf(-v));  // Using expf() for faster computation
 }
 
 __global__ void apply_step_function(float *input, float *output, const int N)
 {
-	const int pos = blockIdx.x * blockDim.x + threadIdx.x;
-	const int size = blockDim.x * gridDim.x;
+    const int total_threads = blockDim.x * gridDim.x;
+    const int thread_id = blockIdx.x * blockDim.x + threadIdx.x;
 
-	for (int idx = N * pos / size; idx < N * (pos+1) / size; ++idx) {
-		output[idx] = step_function(input[idx]);
-	}
+    // Each thread processes elements spaced by the total number of threads
+    for (int idx = thread_id; idx < N; idx += total_threads) {
+        output[idx] = step_function(input[idx]);
+    }
 }
+
 
 __global__ void makeError(float *err, float *output, unsigned int Y, const int N)
 {
@@ -164,33 +166,35 @@ __global__ void fp_f(float input[6][6][6], float preact[10], float weight[10][6]
 }
 
 __global__ void bp_f(float d_weight[10][6][6][6], float bias[10], float d_preact[10], float p_output[6][6][6]) {
-    __shared__ float shared_d_weight[10][6][6][6];
+    // Use a single shared memory buffer for the entire output matrix.
     __shared__ float shared_p_output[6][6][6];
 
+    // Load p_output into shared memory once per block
+    int idx = threadIdx.x + blockDim.x * threadIdx.y;
+    int total_threads = blockDim.x * blockDim.y;
+    for (int index = idx; index < 6*6*6; index += total_threads) {
+        int l = index % 6;
+        int k = (index / 6) % 6;
+        int j = index / 36;
+        shared_p_output[j][k][l] = p_output[j][k][l];
+    }
+    __syncthreads();
+
     int i = blockIdx.x * blockDim.x + threadIdx.x;
-
     if (i < 10) {
-        // Load d_weight and p_output into shared memory
-        for (int j = 0; j < 6; ++j) {
-            for (int k = 0; k < 6; ++k) {
-                for (int l = 0; l < 6; ++l) {
-                    shared_d_weight[i][j][k][l] = d_weight[i][j][k][l];
-                    shared_p_output[j][k][l] = p_output[j][k][l];
-                }
-            }
-        }
-        __syncthreads(); // Ensure all threads have loaded the data before proceeding
+        float d_preact_val = d_preact[i];
+        float* d_weight_i = d_weight[i][0][0];
 
-        // Update weights using shared memory
+        // Update weights using shared output memory
         for (int j = 0; j < 6; ++j) {
             for (int k = 0; k < 6; ++k) {
                 for (int l = 0; l < 6; ++l) {
-                    d_weight[i][j][k][l] = d_preact[i] * shared_p_output[j][k][l];
+                    d_weight_i[j*36 + k*6 + l] += d_preact_val * shared_p_output[j][k][l];
                 }
             }
         }
-        // Update bias
-        bias[i] += c_dt* d_preact[i];
+        // Update bias for this filter
+        atomicAdd(&bias[i], c_dt * d_preact_val);
     }
 }
 
@@ -251,37 +255,17 @@ __global__ void bp_weight_s1(float d_weight[1][4][4], float d_preact[6][6][6],fl
 
 
 __global__ void bp_bias_s1(float bias[1], float d_preact[6][6][6]) {
-    // Define shared memory for reduction
-    __shared__ float sharedSum[6 * 6 * 6];  // Allocate enough space for each thread in the block to hold one element
+    // Assuming a grid of blocks where each thread can access a unique index
+    int i = blockIdx.x;
+    int j = blockIdx.y;
+    int k = threadIdx.x;
 
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;  // Global index
-
-    if (idx < 6 * 6 * 6) {  // Check if within bounds
-        int i = idx / 36;          // First dimension index
-        int j = (idx % 36) / 6;    // Second dimension index
-        int k = idx % 6;           // Third dimension index
-
-        // Copy data to shared memory
-        sharedSum[threadIdx.x] = d_preact[i][j][k];
-    } else {
-        sharedSum[threadIdx.x] = 0.0f;
-    }
-
-    __syncthreads();  // Synchronize threads to ensure all loads are complete
-
-    // Perform reduction in shared memory
-    for (unsigned int s = blockDim.x / 2; s > 0; s >>= 1) {
-        if (threadIdx.x < s) {
-            sharedSum[threadIdx.x] += sharedSum[threadIdx.x + s];
-        }
-        __syncthreads();  // Ensure all additions are done before next step
-    }
-
-    // Update the bias in global memory from the thread 0 of each block
-    if (threadIdx.x == 0) {
-        atomicAdd(&bias[0], c_dt * sharedSum[0] / (6 * 6 * 6));
+    // Ensure only valid threads in bounds do work
+    if (i < 6 && j < 6 && k < 6) {
+        atomicAdd(&bias[0], d_preact[i][j][k]);
     }
 }
+
 
 
 __global__ void bp_output_c1(float d_output[6][24][24], float n_weight[1][4][4], float nd_preact[6][6][6]) {
@@ -324,22 +308,32 @@ __global__ void bp_preact_c1(float d_preact[6][24][24],  float d_output[6][24][2
 }
 
 
-__global__ void bp_weight_c1(float d_weight[6][5][5], float d_preact[6][24][24],  float p_output[28][28]) {
+__global__ void bp_weight_c1(float d_weight[6][5][5], float d_preact[6][24][24], float p_output[28][28]) {
     int filter = blockIdx.z; // Each block handles one filter
     int i = blockIdx.x * blockDim.x + threadIdx.x; // Index for rows in weight tensor
     int j = blockIdx.y * blockDim.y + threadIdx.y; // Index for columns in weight tensor
 
     if (i < 5 && j < 5) {
-        float sum = 0.0;
+        float sum = 0.0f;
+
+        // Calculate the upper left corner of the corresponding region in p_output
+        int start_x = i;
+        int start_y = j;
+
+        // Only loop over the relevant subsection of p_output and d_preact
         for (int x = 0; x < 24; ++x) {
             for (int y = 0; y < 24; ++y) {
-                sum += d_preact[filter][x][y] * p_output[x + i][y + j];
+                sum += d_preact[filter][x][y] * p_output[x + start_x][y + start_y];
             }
         }
-        float d = 24.0f * 24.0f; // Normalization factor
-        d_weight[filter][i][j] = sum / d;
+
+        // Normalization factor, avoiding division inside the loop
+        float normalization_factor = 1.0f / (24.0f * 24.0f); // Normalize once
+        d_weight[filter][i][j] = sum * normalization_factor;
     }
 }
+
+
 
 __global__ void bp_bias_c1(float bias[6], float d_preact[6][24][24]) {
     int feature = blockIdx.x; // Each block handles one feature map
