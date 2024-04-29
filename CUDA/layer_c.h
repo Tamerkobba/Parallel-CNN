@@ -39,7 +39,6 @@ class Layer {
 
 // Utility CUDA kernel functions
 __device__ float step_function(float v);
-__device__ float step_function_derivative(float x);
 __global__ void apply_step_function(float *input, float *output, const int N);
 __global__ void makeError(float *err, float *output, unsigned int Y, const int N);
 __global__ void apply_grad(float *output, float *grad, const int N);
