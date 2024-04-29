@@ -1,6 +1,6 @@
 #define USE_MNIST_LOADER
 #define MNIST_DOUBLE
-#include "mnist.h"
+#include "mnist.h" 
 #include "layer.h"
 #include <cstdio>
 #include <ctime>
@@ -8,7 +8,7 @@
 #include <cmath>
 #include <memory>
 #include <time.h>
-    double total_convolution_time = 0, total_pooling_time = 0, total_fully_connected_time = 0;
+    double total_convolution_time = 0, total_pooling_time = 0, total_fully_connected_time = 0,total_gradient_time=0;
 
 static mnist_data *train_set, *test_set;
 static unsigned int train_cnt, test_cnt;
@@ -22,8 +22,8 @@ static Layer l_f(6*6*6, 10, 10);
 static void learn();
 static unsigned int classify(double data[28][28]);
 static void test();
-static double forward_pass(double data[28][28]);
-static double back_pass();
+static void forward_pass(double data[28][28]);
+static void back_pass();
 
 float vectorNorm(float* vec, int n) {
     float sum = 0.0f;
@@ -43,17 +43,20 @@ static inline void loaddata()
 
 int main(int argc, const char **argv) {
     srand(time(NULL));
-
     loaddata();
     learn();
     test();
+  float milliseconds =  total_convolution_time+total_pooling_time+total_fully_connected_time+total_gradient_time;
+
 printf("Total Convolution Time: %f ms\n", total_convolution_time);
     printf("Total Pooling Time: %f ms\n", total_pooling_time);
     printf("Total Fully Connected Time: %f ms\n", total_fully_connected_time);
+      printf("Total Time on applying gradients: %f ms\n", total_gradient_time);
+    printf("Total Time on Computation CPU(sequential) :%f ms \n",milliseconds);
     return 0;
 }
 
-static double forward_pass(double data[28][28]) {
+static void forward_pass(double data[28][28]) {
   float input[28][28];
 
 	for (int i = 0; i < 28; ++i) {
@@ -68,39 +71,38 @@ static double forward_pass(double data[28][28]) {
 	l_f.clear();
  float milliseconds=0;
 	clock_t start, end;
-	 clock_t start_1,end_1;
-     start_1= clock();
+	
 
 	l_input.setOutput((float *)input);
 	
   start = clock();
     fp_c1((float (*)[28])l_input.output, (float (*)[24][24])l_c1.preact, (float (*)[5][5])l_c1.weight,l_c1.bias);
+    apply_step_function(l_c1.preact, l_c1.output, l_c1.O);
     end = clock();
     milliseconds = 1000.0 * (end - start) / CLOCKS_PER_SEC;
     total_convolution_time += milliseconds;
-    apply_step_function(l_c1.preact, l_c1.output, l_c1.O);
+    
   start = clock();
     fp_s1((float (*)[24][24])l_c1.output, (float (*)[6][6])l_s1.preact, (float (*)[4][4])l_s1.weight,l_s1.bias);
+       apply_step_function(l_s1.preact, l_s1.output, l_s1.O);
       end = clock();
     milliseconds = 1000.0 * (end - start) / CLOCKS_PER_SEC;
     total_pooling_time += milliseconds;
-    apply_step_function(l_s1.preact, l_s1.output, l_s1.O);
+ 
   start = clock();
     fp_preact_f((float (*)[6][6])l_s1.output, l_f.preact, (float (*)[6][6][6])l_f.weight);
     fp_bias_f(l_f.preact, l_f.bias);
+     apply_step_function(l_f.preact, l_f.output, l_f.O);
      end = clock();
     milliseconds = 1000.0 * (end - start) / CLOCKS_PER_SEC;
     total_fully_connected_time += milliseconds;
-    apply_step_function(l_f.preact, l_f.output, l_f.O);
+   
 
-    end_1= clock();
-    return ((double)(end_1 - start_1)) / CLOCKS_PER_SEC;
 }
 
-static double back_pass() {
+static void back_pass() {
     clock_t start,end;
-     clock_t start_1,end_1;
-     start_1 = clock();
+   
  float milliseconds=0;
 start = clock();
     bp_weight_f((float (*)[6][6][6])l_f.d_weight, l_f.d_preact, (float (*)[6][6])l_s1.output);
@@ -124,11 +126,13 @@ start = clock();
 end = clock();
     milliseconds = 1000.0 * (end - start) / CLOCKS_PER_SEC;
     total_convolution_time += milliseconds;
+    start = clock();
 	apply_grad(l_f.weight, l_f.d_weight, l_f.M * l_f.N);
 	apply_grad(l_s1.weight, l_s1.d_weight, l_s1.M * l_s1.N);
 	apply_grad(l_c1.weight, l_c1.d_weight, l_c1.M * l_c1.N);
-     end_1 = clock();
-    return ((double)(end_1 - start_1)) / CLOCKS_PER_SEC;
+    end = clock();
+    milliseconds = 1000.0 * (end - start) / CLOCKS_PER_SEC;
+    total_gradient_time += milliseconds;
 }
 
 static void learn() {
@@ -144,7 +148,7 @@ static void learn() {
         for (int i = 0; i < train_cnt; ++i) {
             float tmp_err;
 
-            time_taken += forward_pass(train_set[i].data);
+            forward_pass(train_set[i].data);
 
             l_f.bp_clear();
             l_s1.bp_clear();
@@ -154,19 +158,17 @@ static void learn() {
     makeError(l_f.d_preact, l_f.output, train_set[i].label, 10);
             tmp_err = vectorNorm(l_f.d_preact, 10);
             err += tmp_err;
-            time_taken += back_pass();
+           back_pass();
         }
 
         err /= train_cnt;
-        fprintf(stdout, "error: %e, time_on_cpu(sequential): %lf\n", err, time_taken);
+        fprintf(stdout, "error: %e\n", err);
 
         if (err < threshold) {
             fprintf(stdout, "Training complete, error less than threshold\n\n");
             break;
         }
     }
-
-    fprintf(stdout, "\nTime - %lf\n", time_taken);
 }
 
 static unsigned int classify(double data[28][28]) {

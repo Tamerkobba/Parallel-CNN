@@ -37,7 +37,6 @@ Layer::Layer(int M, int N, int O)
 	cudaMalloc(&d_weight, sizeof(float) * M * N);
 
 	cudaMemcpy(bias, h_bias, sizeof(float) * N, cudaMemcpyHostToDevice);
-    cudaMemcpyToSymbol(c_dt, &dt, sizeof(float), 0, cudaMemcpyHostToDevice);
 
 	cudaMemcpy(weight, h_weight, sizeof(float) * M * N, cudaMemcpyHostToDevice);
 }
@@ -96,7 +95,7 @@ __global__ void apply_step_function(float *input, float *output, const int N)
 
 
 __global__ void makeError(float *err, float *output, unsigned int Y, const int N)
-{
+{float dt = 1.0E-01f;
 	const int pos = blockIdx.x * blockDim.x + threadIdx.x;
 	const int size = blockDim.x * gridDim.x;
 
@@ -106,7 +105,7 @@ __global__ void makeError(float *err, float *output, unsigned int Y, const int N
 }
 
 __global__ void apply_grad(float *output, float *grad, const int N)
-{
+{float dt = 1.0E-01f;
 	const int pos = blockIdx.x * blockDim.x + threadIdx.x;
 	const int size = blockDim.x * gridDim.x;
 
@@ -168,7 +167,7 @@ __global__ void fp_f(float input[6][6][6], float preact[10], float weight[10][6]
 __global__ void bp_f(float d_weight[10][6][6][6], float bias[10], float d_preact[10], float p_output[6][6][6]) {
     // Use a single shared memory buffer for the entire output matrix.
     __shared__ float shared_p_output[6][6][6];
-
+float dt = 1.0E-01f;
     // Load p_output into shared memory once per block
     int idx = threadIdx.x + blockDim.x * threadIdx.y;
     int total_threads = blockDim.x * blockDim.y;
@@ -194,7 +193,7 @@ __global__ void bp_f(float d_weight[10][6][6][6], float bias[10], float d_preact
             }
         }
         // Update bias for this filter
-        atomicAdd(&bias[i], c_dt * d_preact_val);
+        atomicAdd(&bias[i], dt * d_preact_val);
     }
 }
 
@@ -338,7 +337,7 @@ __global__ void bp_weight_c1(float d_weight[6][5][5], float d_preact[6][24][24],
 __global__ void bp_bias_c1(float bias[6], float d_preact[6][24][24]) {
     int feature = blockIdx.x; // Each block handles one feature map
     int idx = threadIdx.y * blockDim.x + threadIdx.x; // Flattened index for threads in a block
-
+float dt = 1.0E-01f;
     __shared__ float partialSum[256]; // Shared memory for thread partial sums, assuming a block size of 256
 
     // Initialize shared memory
@@ -364,6 +363,6 @@ __global__ void bp_bias_c1(float bias[6], float d_preact[6][24][24]) {
             sum += partialSum[i];
         }
         float d = 24.0f * 24.0f;  // Normalization factor
-        atomicAdd(&bias[feature], c_dt* sum / d);
+        atomicAdd(&bias[feature], dt* sum / d);
     }
 }

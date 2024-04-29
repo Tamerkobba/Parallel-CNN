@@ -100,8 +100,11 @@ void apply_grad(float *output, float *grad, int N) {
     }
 }
 
+
+
 void fp_c1(const float input[28][28], float preact[6][24][24], const float weight[6][5][5], const float bias[6]) {
     // Initialize preact with zeros
+  
     for (int i = 0; i < 6; ++i) {
         for (int j = 0; j < 24; ++j) {
             for (int k = 0; k < 24; ++k) {
@@ -111,10 +114,11 @@ void fp_c1(const float input[28][28], float preact[6][24][24], const float weigh
     }
 
     // Compute preact values
+   
     for (int m = 0; m < 6; ++m) {
         for (int x = 0; x < 24; ++x) {
             for (int y = 0; y < 24; ++y) {
-                float sum = 0.0f;
+                float sum = 0.0f;  // sum needs to be private to each thread
                 for (int i = 0; i < 5; ++i) {
                     for (int j = 0; j < 5; ++j) {
                         sum += input[x + i][y + j] * weight[m][i][j];
@@ -125,7 +129,7 @@ void fp_c1(const float input[28][28], float preact[6][24][24], const float weigh
         }
     }
 
-    // Add bias to preact
+ 
     for (int i = 0; i < 6; ++i) {
         for (int x = 0; x < 24; ++x) {
             for (int y = 0; y < 24; ++y) {
@@ -134,6 +138,7 @@ void fp_c1(const float input[28][28], float preact[6][24][24], const float weigh
         }
     }
 }
+
 
 void fp_s1(const float input[6][24][24], float preact[6][6][6], const float weight[1][4][4], const float bias[1]) {
     // Initialize preact to zero before accumulation

@@ -8,9 +8,7 @@
 #define LAYER_H
 #endif
 
-const static float dt = 1.0E-01f;
 const static float threshold = 1.0E-02f;
-__constant__ float c_dt;
 
 
 class Layer {
