@@ -46,13 +46,13 @@ int main(int argc, const char **argv) {
     loaddata();
     learn();
     test();
-  float milliseconds =  total_convolution_time+total_pooling_time+total_fully_connected_time+total_gradient_time;
+  double millisecond =  total_convolution_time+total_pooling_time+total_fully_connected_time+total_gradient_time;
 
-printf("Total Convolution Time: %f ms\n", total_convolution_time);
+    printf("Total Convolution Time: %f ms\n", total_convolution_time);
     printf("Total Pooling Time: %f ms\n", total_pooling_time);
     printf("Total Fully Connected Time: %f ms\n", total_fully_connected_time);
-      printf("Total Time on applying gradients: %f ms\n", total_gradient_time);
-    printf("Total Time on Computation CPU(sequential) :%f ms \n",milliseconds);
+    printf("Total Time on applying gradients: %f ms\n", total_gradient_time);
+    printf("Total Time on Computation CPU(sequential) :%f ms \n",millisecond);
     return 0;
 }
 
@@ -69,34 +69,35 @@ static void forward_pass(double data[28][28]) {
 	l_c1.clear();
 	l_s1.clear();
 	l_f.clear();
- float milliseconds=0;
+    float milliseconds=0;
 	clock_t start, end;
 	
 
 	l_input.setOutput((float *)input);
-	
-  start = clock();
+	 // forward pass Convolution Layer
+    start = clock();
     fp_c1((float (*)[28])l_input.output, (float (*)[24][24])l_c1.preact, (float (*)[5][5])l_c1.weight,l_c1.bias);
     apply_step_function(l_c1.preact, l_c1.output, l_c1.O);
     end = clock();
     milliseconds = 1000.0 * (end - start) / CLOCKS_PER_SEC;
     total_convolution_time += milliseconds;
-    
-  start = clock();
+
+     // forward pass pooling Layer
+    start = clock();
     fp_s1((float (*)[24][24])l_c1.output, (float (*)[6][6])l_s1.preact, (float (*)[4][4])l_s1.weight,l_s1.bias);
-       apply_step_function(l_s1.preact, l_s1.output, l_s1.O);
-      end = clock();
+    apply_step_function(l_s1.preact, l_s1.output, l_s1.O);
+    end = clock();
     milliseconds = 1000.0 * (end - start) / CLOCKS_PER_SEC;
     total_pooling_time += milliseconds;
- 
-  start = clock();
+
+ // forward pass Fully Connected Layer
+    start = clock();
     fp_preact_f((float (*)[6][6])l_s1.output, l_f.preact, (float (*)[6][6][6])l_f.weight);
     fp_bias_f(l_f.preact, l_f.bias);
-     apply_step_function(l_f.preact, l_f.output, l_f.O);
-     end = clock();
+    apply_step_function(l_f.preact, l_f.output, l_f.O);
+    end = clock();
     milliseconds = 1000.0 * (end - start) / CLOCKS_PER_SEC;
     total_fully_connected_time += milliseconds;
-   
 
 }
 

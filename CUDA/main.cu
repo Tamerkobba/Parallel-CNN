@@ -9,10 +9,10 @@
 #include <cuda_runtime.h>
 #include <device_launch_parameters.h>
 
-static float total_convolution_time = 0.0f;
-static float total_pooling_time = 0.0f;
-static float total_fully_connected_time = 0.0f;
-static float total_gradient_time=0.0f;
+ float total_convolution_time = 0.0f;
+ float total_pooling_time = 0.0f;
+ float total_fully_connected_time = 0.0f;
+ float total_gradient_time=0.0f;
 static mnist_data *train_set, *test_set;
 static unsigned int train_cnt, test_cnt;
 
@@ -53,13 +53,13 @@ int main(int argc, const  char **argv)
     loaddata();
     learn();
     test();
-  float milliseconds =  total_convolution_time+total_pooling_time+total_fully_connected_time+total_gradient_time;
+  float millisecond =  total_convolution_time+total_pooling_time+total_fully_connected_time+total_gradient_time;
 
 printf("Total Convolution Time: %f ms\n", total_convolution_time);
     printf("Total Pooling Time: %f ms\n", total_pooling_time);
     printf("Total Fully Connected Time: %f ms\n", total_fully_connected_time);
       printf("Total Time on applying gradients: %f ms\n", total_gradient_time);
-    printf("Total Time on Computation GPU :%f ms \n",milliseconds);
+    printf("Total Time on Computation GPU :%f ms \n",millisecond);
     return 0;
 }
 // Forward propagation of a single row in dataset
