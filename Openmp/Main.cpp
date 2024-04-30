@@ -8,6 +8,7 @@
 #include <cmath>
 #include <memory>
 #include <time.h>
+    
 static mnist_data *train_set, *test_set;
 static unsigned int train_cnt, test_cnt;
 
