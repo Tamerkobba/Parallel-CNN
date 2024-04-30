@@ -4,7 +4,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
-#include <omp.h>
+#include<omp.h>
 
 #ifndef LAYER_H
 #define LAYER_H
@@ -84,24 +84,33 @@ float step_function(float v) {
 }
 
 void apply_step_function(float *input, float *output, int N) {
+    #pragma omp parallel for
     for (int i = 0; i < N; ++i) {
         output[i] = step_function(input[i]);
     }
 }
 
 void makeError(float *err, float *output, unsigned int Y, int N) {
+    #pragma omp parallel for
     for (int i = 0; i < N; ++i) {
         err[i] = (i == Y) ? 1.0f - output[i] : -output[i];
     }
 }
 
+// Parallelize the gradient application in apply_grad
 void apply_grad(float *output, float *grad, int N) {
+    #pragma omp parallel for
     for (int i = 0; i < N; ++i) {
         output[i] += dt * grad[i];
     }
 }
 
-void fp_preact_c1(const float input[28][28], float preact[6][24][24], const float weight[6][5][5]) {
+
+
+
+void fp_c1(const float input[28][28], float preact[6][24][24], const float weight[6][5][5], const float bias[6]) {
+    // Initialize preact with zeros
+  
     for (int i = 0; i < 6; ++i) {
         for (int j = 0; j < 24; ++j) {
             for (int k = 0; k < 24; ++k) {
@@ -110,12 +119,12 @@ void fp_preact_c1(const float input[28][28], float preact[6][24][24], const floa
         }
     }
 
-    #pragma omp parallel for collapse(2)
+    // Compute preact values
+     #pragma omp parallel for collapse(2)
     for (int m = 0; m < 6; ++m) {
         for (int x = 0; x < 24; ++x) {
             for (int y = 0; y < 24; ++y) {
-                float sum = 0.0f;
-                #pragma omp for reduction(sum:+)
+                float sum = 0.0f;  // sum needs to be private to each thread
                 for (int i = 0; i < 5; ++i) {
                     for (int j = 0; j < 5; ++j) {
                         sum += input[x + i][y + j] * weight[m][i][j];
@@ -125,73 +134,73 @@ void fp_preact_c1(const float input[28][28], float preact[6][24][24], const floa
             }
         }
     }
-}
 
-
-
-void fp_bias_c1(float preact[6][24][24], const float bias[6]) {
-    // Iterate over each feature map
-    #pragma omp parallel for collapse(2)
-    for (int i = 0; i < 6; ++i) { // There are 6 feature maps
-        // Iterate over each element in the feature map
-        for (int x = 0; x < 24; ++x) { // Each feature map is 24x24
+ 
+    for (int i = 0; i < 6; ++i) {
+        for (int x = 0; x < 24; ++x) {
             for (int y = 0; y < 24; ++y) {
-                // Add the corresponding bias to each element
                 preact[i][x][y] += bias[i];
             }
         }
     }
 }
 
-void fp_preact_s1(const float input[6][24][24], float preact[6][6][6], const float weight[1][4][4]) {
-    // Initialize preact to zero before accumulation
-    #pragma omp parallel for
-    for (int m = 0; m < 6; ++m)
-        for (int x = 0; x < 6; ++x)
-            for (int y = 0; y < 6; ++y)
-                preact[m][x][y] = 0;
 
-    
-    #pragma omp parallel for
-    for (int ind = 0; ind < 216; ind++) {
-        int m = ind / 36;
-        int x = ind / 6 - m * 6;
-        int y = ind - m * 6 * 6 - x * 6;
-        float sum = 0.0f;
-        for (int i = 0; i < 4; ++i) { 
-            for (int j = 0; j < 4; ++j) {  
-                sum += weight[0][i][j] * input[m][x * 4 + i][y * 4 + j];
+void fp_s1(const float input[6][24][24], float preact[6][6][6], const float weight[1][4][4], const float bias[1]) {
+    // Initialize preact to zero before accumulation
+    for (int m = 0; m < 6; ++m) {
+        for (int x = 0; x < 6; ++x) {
+            for (int y = 0; y < 6; ++y) {
+                preact[m][x][y] = 0;
             }
         }
-        #pragma omp atomic
-        preact[m][x][y] += sum;
     }
-}
+ #pragma omp parallel for collapse(3)
+    // Nested loops to simulate the behavior of the CUDA kernel
+    for (int m = 0; m < 6; ++m) {
+        // for each output feature map
+        for (int x = 0; x < 6; ++x) {
+            // output dimensions are reduced by factor of 4
+            for (int y = 0; y < 6; ++y) {
+                float sum = 0.0f;
+                for (int i = 0; i < 4; ++i) {
+                    // kernel width
+                    for (int j = 0; j < 4; ++j) {
+                        // kernel height
+                        // Applying weights on input and summing up to form the pooled output
+                        sum += weight[0][i][j] * input[m][x * 4 + i][y * 4 + j];
+                    }
+                }
+                preact[m][x][y] += sum; // Pooling operation with weighted sum
+            }
+        }
+    }
 
-void fp_bias_s1(float preact[6][6][6], const float bias[1]) {
-    #pragma omp parallel for 
-    for (int ind = 0; ind < 216; ind++) {
-        int m = ind / 36;
-        int x = ind / 6 - m * 6;
-        int y = ind - m * 6 * 6 - x * 6;
-        preact[m][x][y] += bias[0];
+    // Add bias to preact
+    for (int i = 0; i < 6; ++i) {
+        for (int j = 0; j < 6; ++j) {
+            for (int k = 0; k < 6; ++k) {
+                preact[i][j][k] += bias[0];
+            }
+        }
     }
 }
 
 
 void fp_preact_f(const float input[6][6][6], float preact[10], const float weight[10][6][6][6]) {
     // Initialize the output preactivation array to zero
-    #pragma omp parallel for
+    
     for (int i = 0; i < 10; ++i) {
         preact[i] = 0;
     }
 
     // Compute the dot product of the input with weights for each output unit
-    #pragma omp parallel for collapse(2)
+    #pragma omp parallel for collapse(3)
     for (int i = 0; i < 10; ++i) { // output dimension
         for (int j = 0; j < 6; ++j) { // first dimension of input
             for (int k = 0; k < 6; ++k) { // second dimension of input
                 for (int l = 0; l < 6; ++l) { // third dimension of input
+                    
                     preact[i] += weight[i][j][k][l] * input[j][k][l];
                 }
             }
@@ -202,15 +211,15 @@ void fp_preact_f(const float input[6][6][6], float preact[10], const float weigh
 
 void fp_bias_f(float preact[10], const float bias[10]) {
     // Iterate through each element of the preact array and add the corresponding bias
-    #pragma omp parallel for
     for (int i = 0; i < 10; ++i) {
         preact[i] += bias[i];
     }
 }
 
+
 void bp_weight_f(float d_weight[10][6][6][6], const float d_preact[10], const float p_output[6][6][6]) {
     // Iterate over all indices for weight updates
-    #pragma omp parallel for collapse(3)
+     #pragma omp parallel for collapse(4)
     for (int i = 0; i < 10; ++i) { // over output dimension
         for (int j = 0; j < 6; ++j) { // first dimension of input
             for (int k = 0; k < 6; ++k) { // second dimension of input
@@ -225,6 +234,7 @@ void bp_weight_f(float d_weight[10][6][6][6], const float d_preact[10], const fl
 
 void bp_bias_f(float bias[10], const float d_preact[10]) {
     // Iterate over each bias and update it based on the gradient
+    #pragma omp parallel for
     for (int i = 0; i < 10; ++i) {
         bias[i] += dt * d_preact[i];
     }
@@ -233,6 +243,7 @@ void bp_bias_f(float bias[10], const float d_preact[10]) {
 
 void bp_output_s1(float d_output[6][6][6], const float n_weight[10][6][6][6], const float nd_preact[10]) {
     // Initialize d_output to zero before accumulation
+     #pragma omp parallel for collapse(3)
     for (int i = 0; i < 6; ++i) {
         for (int j = 0; j < 6; ++j) {
             for (int k = 0; k < 6; ++k) {
@@ -241,7 +252,9 @@ void bp_output_s1(float d_output[6][6][6], const float n_weight[10][6][6][6], co
         }
     }
 
+    
     // Compute the gradient contribution from each neuron's weight and pre-activation gradient
+     #pragma omp parallel for collapse(3)
     for (int i1 = 0; i1 < 10; ++i1) { // over each output neuron
         for (int i2 = 0; i2 < 6; ++i2) { // first dimension of output
             for (int i3 = 0; i3 < 6; ++i3) { // second dimension of output
@@ -268,7 +281,7 @@ void bp_preact_s1(float d_preact[6][6][6], const float d_output[6][6][6], const 
 
 void bp_weight_s1(float d_weight[1][4][4], const float d_preact[6][6][6], const float p_output[6][24][24]) {
     // Initialize d_weight to zero before accumulation
-    #pragma omp parallel for collapse(3)
+    
     for (int i = 0; i < 1; ++i) {
         for (int j = 0; j < 4; ++j) {
             for (int k = 0; k < 4; ++k) {
@@ -278,7 +291,7 @@ void bp_weight_s1(float d_weight[1][4][4], const float d_preact[6][6][6], const 
     }
 
     // Compute the gradient for each weight
-    #pragma omp parallel for collapse(5)
+    
     for (int i1 = 0; i1 < 1; ++i1) { // single weight map
         for (int i2 = 0; i2 < 4; ++i2) { // kernel width
             for (int i3 = 0; i3 < 4; ++i3) { // kernel height
@@ -286,7 +299,7 @@ void bp_weight_s1(float d_weight[1][4][4], const float d_preact[6][6][6], const 
                     for (int i5 = 0; i5 < 6; ++i5) { // first dimension of output
                         for (int i6 = 0; i6 < 6; ++i6) { // second dimension of output
                             // Calculate the corresponding output location and accumulate the gradient
-                            #pragma omp atomic
+                            
                             d_weight[i1][i2][i3] += d_preact[i4][i5][i6] * p_output[i4][i5 * 4 + i2][i6 * 4 + i3];
                         }
                     }
@@ -299,7 +312,7 @@ void bp_weight_s1(float d_weight[1][4][4], const float d_preact[6][6][6], const 
 void bp_bias_s1(float bias[1], const float d_preact[6][6][6]) {
     float sum = 0.0f;
     int total_elements = 6 * 6 * 6; // Total elements in the d_preact array
-
+  #pragma omp parallel for reduction(+:sum)
     // Sum all gradient contributions
     for (int i = 0; i < 6; ++i) {
         for (int j = 0; j < 6; ++j) {
@@ -312,9 +325,9 @@ void bp_bias_s1(float bias[1], const float d_preact[6][6][6]) {
     // Update the bias term by averaging the gradients
     bias[0] += dt * sum / total_elements;
 }
-
 void bp_output_c1(float d_output[6][24][24], const float n_weight[1][4][4], const float nd_preact[6][6][6]) {
     // Initialize d_output to zero before accumulation
+    #pragma omp parallel for collapse(3)
     for (int i = 0; i < 6; ++i) {
         for (int j = 0; j < 24; ++j) {
             for (int k = 0; k < 24; ++k) {
@@ -324,6 +337,7 @@ void bp_output_c1(float d_output[6][24][24], const float n_weight[1][4][4], cons
     }
 
     // Calculate the contribution of each neuron's error
+    #pragma omp parallel for collapse(6)
     for (int i1 = 0; i1 < 1; ++i1) { // only one set of weights
         for (int i2 = 0; i2 < 4; ++i2) { // kernel width
             for (int i3 = 0; i3 < 4; ++i3) { // kernel height
@@ -355,6 +369,7 @@ void bp_preact_c1(float d_preact[6][24][24], const float d_output[6][24][24], co
     };
 
     // Compute the gradient of pre-activation for each element
+    #pragma omp parallel for collapse(3)
     for (int i = 0; i < 6; ++i) {
         for (int j = 0; j < 24; ++j) {
             for (int k = 0; k < 24; ++k) {
@@ -367,6 +382,7 @@ void bp_preact_c1(float d_preact[6][24][24], const float d_output[6][24][24], co
 
 void bp_weight_c1(float d_weight[6][5][5], const float d_preact[6][24][24], const float p_output[28][28]) {
     // Initialize d_weight to zero before accumulation
+    #pragma omp parallel for collapse(2)
     for (int i = 0; i < 6; ++i) {
         for (int j = 0; j < 5; ++j) {
             for (int k = 0; k < 5; ++k) {
@@ -375,9 +391,10 @@ void bp_weight_c1(float d_weight[6][5][5], const float d_preact[6][24][24], cons
         }
     }
 
-    float d = 24.0f * 24.0f;  // Normalization factor
+    float d = 24.0f * 24.0f; // Normalization factor
 
     // Compute the gradient for each weight
+    #pragma omp parallel for collapse(4)
     for (int i1 = 0; i1 < 6; ++i1) {
         for (int i2 = 0; i2 < 5; ++i2) {
             for (int i3 = 0; i3 < 5; ++i3) {
@@ -391,21 +408,25 @@ void bp_weight_c1(float d_weight[6][5][5], const float d_preact[6][24][24], cons
     }
 }
 
-
 void bp_bias_c1(float bias[6], const float d_preact[6][24][24]) {
     // Initialize accumulators for each bias to zero before accumulation
     float accumulators[6] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
 
-    float d = 24.0f * 24.0f;  // Normalization factor
+    float d = 24.0f * 24.0f; // Normalization factor
 
     // Aggregate gradients for each bias
+    #pragma omp parallel for collapse(2) reduction(+:accumulators[:6])
     for (int i = 0; i < 6; ++i) {
         for (int j = 0; j < 24; ++j) {
             for (int k = 0; k < 24; ++k) {
                 accumulators[i] += d_preact[i][j][k];
             }
         }
-        // Update each bias by adding the normalized accumulated gradient
+    }
+
+    // Update each bias by adding the normalized accumulated gradient
+    #pragma omp parallel for
+    for (int i = 0; i < 6; ++i) {
         bias[i] += dt * accumulators[i] / d;
     }
 }

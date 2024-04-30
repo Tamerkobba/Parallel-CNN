@@ -9,10 +9,6 @@
 #include <cuda_runtime.h>
 #include <device_launch_parameters.h>
 
- float total_convolution_time = 0.0f;
- float total_pooling_time = 0.0f;
- float total_fully_connected_time = 0.0f;
- float total_gradient_time=0.0f;
 static mnist_data *train_set, *test_set;
 static unsigned int train_cnt, test_cnt;
 
@@ -25,8 +21,8 @@ static Layer l_f = Layer(6*6*6, 10, 10);
 static void learn();
 static unsigned int classify(double data[28][28]);
 static void test();
-static void forward_pass(double data[28][28]);
-static void back_pass();
+static double forward_pass(double data[28][28]);
+static double back_pass();
 
 struct KernelConfig {
     dim3 blocks;
@@ -53,17 +49,11 @@ int main(int argc, const  char **argv)
     loaddata();
     learn();
     test();
-  float millisecond =  total_convolution_time+total_pooling_time+total_fully_connected_time+total_gradient_time;
 
-printf("Total Convolution Time: %f ms\n", total_convolution_time);
-    printf("Total Pooling Time: %f ms\n", total_pooling_time);
-    printf("Total Fully Connected Time: %f ms\n", total_fully_connected_time);
-      printf("Total Time on applying gradients: %f ms\n", total_gradient_time);
-    printf("Total Time on Computation GPU :%f ms \n",millisecond);
     return 0;
 }
 // Forward propagation of a single row in dataset
-static void forward_pass(double data[28][28])
+static double forward_pass(double data[28][28])
 {
 	float input[28][28];
 
@@ -77,20 +67,16 @@ static void forward_pass(double data[28][28])
 	l_c1.clear();
 	l_s1.clear();
 	l_f.clear();
-float milliseconds=0;
-	clock_t start, end;
 
-
+		clock_t start, end;
+	start = clock();
 
 	l_input.setOutput((float *)input);
 	KernelConfig configLayer1 = {dim3(6), dim3(24, 24)};
-  start = clock();
+ 
   fp_c1<<<configLayer1.blocks, configLayer1.threads>>>((float (*)[28])l_input.output, (float (*)[24][24])l_c1.preact, (float (*)[5][5])l_c1.weight,l_c1.bias);
 	  apply_step_function<<<configLayer1.blocks, configLayer1.threads>>>(l_c1.preact, l_c1.output, l_c1.O);
-   end = clock();
-    milliseconds = 1000.0 * (end - start) / CLOCKS_PER_SEC;
-    total_convolution_time += milliseconds;
-
+   
 
 
 		  // Pooling layer
@@ -104,46 +90,38 @@ KernelConfig configSubsample1 = {
     dim3(2, 2, 2), // Blocks
     dim3(3, 3, 3)  // Threads per block
 };
-start = clock();
+
 	fp_s1<<<configSubsample1.blocks, configSubsample1.threads>>>((float (*)[24][24])l_c1.output, (float (*)[6][6])l_s1.preact, (float (*)[4][4])l_s1.weight,l_s1.bias);
 
 	apply_step_function<<<configSubsample1.blocks, configSubsample1.threads>>>(l_s1.preact, l_s1.output, l_s1.O);
-    end = clock();
-    milliseconds = 1000.0 * (end - start) / CLOCKS_PER_SEC;
-    total_pooling_time += milliseconds;
-
+  
   
 
 		 // Fully connected layer
 
 	  KernelConfig configFullyConnected = {dim3(10), dim3(256)};
-// Kernel launch
-	start = clock();
+
 fp_f<<<configFullyConnected.blocks, configFullyConnected.threads>>>((float (*)[6][6])l_s1.output, l_f.preact, (float (*)[6][6][6])l_f.weight,l_f.bias);
 apply_step_function<<<1, 10>>>(l_f.preact, l_f.output, l_f.O);
-   end = clock();
-    milliseconds = 1000.0 * (end - start) / CLOCKS_PER_SEC;
-    total_fully_connected_time += milliseconds;
-	
-
+  
+	end = clock();
+	return ((double) (end - start)) / CLOCKS_PER_SEC;
 
 }
 
 // Back propagation to update weights
-static void back_pass()
+static double back_pass()
 {
-	clock_t start, end;
-float milliseconds=0;
+clock_t start, end;
+
+	start = clock();
 
 int blockSize = 256;  // Optimal block size
 int numOutputs = 10;
 int gridSize = (numOutputs + blockSize - 1) / blockSize;
-	start = clock();
+	
 bp_f<<<gridSize, blockSize>>>((float (*)[6][6][6])l_f.d_weight,l_f.bias, l_f.d_preact, (float (*)[6][6])l_s1.output);
-   end = clock();
-    milliseconds = 1000.0 * (end - start) / CLOCKS_PER_SEC;
-    total_fully_connected_time += milliseconds;
-start = clock();
+ 
   bp_output_s1<<<5,(216 + 5 - 1) / 5>>>((float (*)[6][6])l_s1.d_output, (float (*)[6][6][6])l_f.weight, l_f.d_preact);
 	dim3 threadsPerBlock_s1(6, 6, 6); // One thread for each element in the 6x6x6 block
 dim3 numBlocks_s1(1, 1, 1);
@@ -154,14 +132,13 @@ dim3 numBlocks_w_s1(1, 1);
 	int totalThreads=6*6*6;
 	int numBlocks = (totalThreads + 256 - 1);
 	bp_bias_s1<<<numBlocks, 256>>>(l_s1.bias, (float (*)[6][6])l_s1.d_preact);
-     end = clock();
-    milliseconds = 1000.0 * (end - start) / CLOCKS_PER_SEC;
-    total_pooling_time += milliseconds;
+    
+		
 dim3 threadsPerBlock_output_c1(8,8 );  // 4x4 threads to handle the 4x4 weight matrix
 dim3 numBlocks_output_c1((24 + threadsPerBlock_output_c1.x - 1) / threadsPerBlock_output_c1.x,
                (24 + threadsPerBlock_output_c1.y - 1) / threadsPerBlock_output_c1.y,
                6);
-						start = clock();	 
+					
 	bp_output_c1<<<numBlocks_output_c1, threadsPerBlock_output_c1>>>((float (*)[24][24])l_c1.d_output, (float (*)[4][4])l_s1.weight, (float (*)[6][6])l_s1.d_preact);
 	
 	dim3 threadsPerBlock_bp_preact_c1(8, 8); // This can be tuned based on the device capabilities
@@ -177,16 +154,11 @@ dim3 numBlocks_weight_c1(1, 1, 6);
 	dim3 blocks_bias_c1(6); // One block per feature map
 dim3 threads_bias_c1(16, 16);
 	bp_bias_c1<<<blocks_bias_c1, threads_bias_c1>>>(l_c1.bias, (float (*)[24][24])l_c1.d_preact);
-end = clock();
-    milliseconds = 1000.0 * (end - start) / CLOCKS_PER_SEC;
-    total_convolution_time += milliseconds;
-start=clock();
 	apply_grad<<<64, 64>>>(l_f.weight, l_f.d_weight, l_f.M * l_f.N);
 	apply_grad<<<64, 64>>>(l_s1.weight, l_s1.d_weight, l_s1.M * l_s1.N);
 	apply_grad<<<64, 64>>>(l_c1.weight, l_c1.d_weight, l_c1.M * l_c1.N);
-	  end = clock();
-    milliseconds = 1000.0 * (end - start) / CLOCKS_PER_SEC;
-    total_gradient_time += milliseconds;
+	end = clock();
+	return ((double) (end - start)) / CLOCKS_PER_SEC;
 
 }
 
@@ -197,7 +169,8 @@ static void learn()
 
 	float err;
 	int iter = 1;
-
+	
+	double time_taken = 0.0;
 
 	fprintf(stdout ,"Learning\n");
 
@@ -207,7 +180,7 @@ static void learn()
 		for (int i = 0; i < train_cnt; ++i) {
 			float tmp_err;
 
-			 forward_pass(train_set[i].data);
+			time_taken += forward_pass(train_set[i].data);
 
 			l_f.bp_clear();
 			l_s1.bp_clear();
@@ -218,11 +191,11 @@ static void learn()
 			cublasSnrm2(blas, 10, l_f.d_preact, 1, &tmp_err);
 			err += tmp_err;
 
-	back_pass();
+			time_taken += back_pass();
 		}
 
 		err /= train_cnt;
-		fprintf(stdout, "error: %e\n", err);
+		fprintf(stdout, "error: %e, time_on_gpu: %lf\n", err, time_taken);
 
 		if (err < threshold) {
 			fprintf(stdout, "Training complete, error less than threshold\n\n");
@@ -231,6 +204,7 @@ static void learn()
 
 	}
 	
+	fprintf(stdout, "\n Time - %lf\n", time_taken);
 }
 
 
