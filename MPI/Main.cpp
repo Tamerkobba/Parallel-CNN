@@ -8,6 +8,7 @@
 #include <cmath>
 #include <memory>
 #include <time.h>
+#include <mpi.h>
 
 static mnist_data *train_set, *test_set;
 static unsigned int train_cnt, test_cnt;
@@ -41,6 +42,7 @@ static inline void loaddata()
 }
 
 int main(int argc, const char **argv) {
+    MPI_Init(NULL, NULL);
     srand(time(NULL));
 
     loaddata();
@@ -48,6 +50,7 @@ int main(int argc, const char **argv) {
     test();
 
     return 0;
+    MPI_Finalize();
 }
 
 static double forward_pass(double data[28][28]) {
