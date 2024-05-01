@@ -264,7 +264,7 @@ void fp_preact_s1(const float input[6][24][24], float preact[6][6][6], const flo
                 sum += weight[0][i][j] * input[m][x * 4 + i][y * 4 + j];
             }
         }
-        placeHolder[l] += sum; // Pooling operation with weighted sum
+        placeHolder[l] += sum;
     }
 
     MPI_Reduce(placeHolder, result, S, MPI_FLOAT, MPI_SUM, 0, MPI_COMM_WORLD);
@@ -523,16 +523,14 @@ void bp_weight_s1(float d_weight[1][4][4], const float d_preact[6][6][6], const 
     start = r * it;
     end = Min(r * (it + 1), 4 * 4 * 6 * 6 * 6);
 
-    // Compute the gradient for each weight
-    
-        for (int i = 0; i < 4 * 4 * 6 * 6 * 6; ++i) {
-            int i2 = i / (4 * 6 * 6 * 6);
-            int i3 = (i / (6 * 6 * 6)) % 4;
-            int i4 = (i / (6 * 6)) % 6;
-            int i5 = (i / 6) % 6;
-            int i6 = i % 6;
-            placeHolder[i2 * 4 + i3] += d_preact[i4][i5][i6] * p_output[i4][i5 * 4 + i2][i6 * 4 + i3];
-        }
+    for (int i = 0; i < 4 * 4 * 6 * 6 * 6; ++i) {
+        int i2 = i / (4 * 6 * 6 * 6);
+        int i3 = (i / (6 * 6 * 6)) % 4;
+        int i4 = (i / (6 * 6)) % 6;
+        int i5 = (i / 6) % 6;
+        int i6 = i % 6;
+        placeHolder[i2 * 4 + i3] += d_preact[i4][i5][i6] * p_output[i4][i5 * 4 + i2][i6 * 4 + i3];
+    }
 
     MPI_Reduce(placeHolder, result, S, MPI_FLOAT, MPI_SUM, 0, MPI_COMM_WORLD);
     if (r==0){
@@ -611,18 +609,15 @@ void bp_output_c1(float d_output[6][24][24], const float n_weight[1][4][4], cons
 }
 
 void bp_preact_c1(float d_preact[6][24][24], const float d_output[6][24][24], const float preact[6][24][24]) {
-    // Assume step_function is a sigmoid activation function
     auto sigmoid = [](float x) {
         return 1.0f / (1.0f + exp(-x));
     };
 
-    // Assume the derivative of the sigmoid function
     auto sigmoid_derivative = [](float x) {
         float s = 1.0f / (1.0f + exp(-x));
         return s * (1 - s);
     };
 
-    // Compute the gradient of pre-activation for each element
      int p;
     MPI_Comm_size(MPI_COMM_WORLD, &p);
 

@@ -13,7 +13,6 @@
 static mnist_data *train_set, *test_set;
 static unsigned int train_cnt, test_cnt;
 
-// Define layers of CNN
 static Layer l_input(0, 0, 28*28);
 static Layer l_c1(5*5, 6, 24*24*6);
 static Layer l_s1(4*4, 1, 6*6*6);
